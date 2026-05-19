@@ -1,11 +1,27 @@
 import { useAuth } from "@workos-inc/authkit-react";
+import { useLocation } from "react-router";
 import { Button } from "@/components/ui/button";
-import { Feather, Zap, Search, Pin, ArrowRight, Sun, Moon } from "lucide-react";
+import {
+  AlertCircle,
+  Feather,
+  Zap,
+  Search,
+  Pin,
+  ArrowRight,
+  Sun,
+  Moon,
+} from "lucide-react";
 import { useTheme } from "@/hooks/use-theme";
+
+type LocationState = {
+  authError?: string;
+};
 
 export function LandingPage() {
   const { signIn } = useAuth();
+  const location = useLocation();
   const { theme, toggleTheme } = useTheme();
+  const authError = (location.state as LocationState | null)?.authError;
 
   return (
     <div className="min-h-screen bg-page flex flex-col relative paper-texture">
@@ -49,6 +65,13 @@ export function LandingPage() {
             <br />
             <span className="text-accent">your brain</span>
           </h1>
+
+          {authError && (
+            <div className="mt-6 mx-auto max-w-lg flex items-start gap-2 rounded-sm border border-warning/30 bg-warning/10 px-3 py-2 text-left text-sm text-ink-secondary">
+              <AlertCircle size={16} className="mt-0.5 shrink-0 text-warning" />
+              <span>{authError}</span>
+            </div>
+          )}
 
           <p className="mt-6 sm:mt-8 text-base sm:text-lg text-ink-secondary max-w-lg mx-auto leading-relaxed">
             A fast, keyboard-first notes app for power users who end up with 30

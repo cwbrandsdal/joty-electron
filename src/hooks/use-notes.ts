@@ -39,14 +39,13 @@ export function useUpdateNote() {
       api.updateNote(id, data),
     onSuccess: (updatedNote) => {
       queryClient.setQueryData(["note", updatedNote.id], updatedNote);
-      // Optimistically update list items
+      // Optimistically update list items and move the edited note to the top
       queryClient.setQueriesData<{ items: NoteSummaryDto[] }>(
         { queryKey: ["notes"] },
         (old) => {
           if (!old) return old;
-          return {
-            ...old,
-            items: old.items.map((item) =>
+          const updated = old.items
+            .map((item) =>
               item.id === updatedNote.id
                 ? {
                     ...item,
@@ -55,8 +54,13 @@ export function useUpdateNote() {
                     updatedUtc: updatedNote.updatedUtc,
                   }
                 : item,
-            ),
-          };
+            )
+            .sort(
+              (a, b) =>
+                new Date(b.updatedUtc).getTime() -
+                new Date(a.updatedUtc).getTime(),
+            );
+          return { ...old, items: updated };
         },
       );
     },

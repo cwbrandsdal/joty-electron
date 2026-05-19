@@ -1,17 +1,32 @@
 import { useEffect } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { useAuth } from "@workos-inc/authkit-react";
 import { Loader2 } from "lucide-react";
 
 export function AuthCallbackPage() {
   const { isLoading, user } = useAuth();
+  const location = useLocation();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!isLoading && user) {
+    if (isLoading) return;
+
+    if (user) {
       navigate("/app", { replace: true });
+      return;
     }
-  }, [isLoading, user, navigate]);
+
+    const params = new URLSearchParams(location.search);
+    const authError =
+      params.get("error_description") ||
+      params.get("error") ||
+      "Sign-in did not complete. Please try again.";
+
+    navigate("/", {
+      replace: true,
+      state: { authError },
+    });
+  }, [isLoading, location.search, user, navigate]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-page">
