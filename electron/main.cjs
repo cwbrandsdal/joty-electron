@@ -31,6 +31,19 @@ let appUpdateState = {
   currentVersion: app.getVersion(),
 };
 
+function isAuthFlowUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname === 'api.workos.com' ||
+      parsed.hostname.endsWith('.authkit.app') ||
+      (parsed.hostname === '127.0.0.1' && parsed.port === String(PORT))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function startStaticServer(root) {
   return new Promise((resolve) => {
     server = http.createServer((req, res) => {
@@ -251,7 +264,15 @@ async function createWindow() {
 
   // Open external links in default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http')) shell.openExternal(url);
+    const currentUrl = mainWindow.webContents.getURL();
+    const isSpawnedFromAuthFlow = isAuthFlowUrl(currentUrl);
+
+    if (isAuthFlowUrl(url) || isSpawnedFromAuthFlow) {
+      mainWindow.loadURL(url);
+    } else if (url.startsWith('http')) {
+      shell.openExternal(url);
+    }
+
     return { action: 'deny' };
   });
 
