@@ -1,7 +1,7 @@
 {
-  "name": "jotly-electron",
+  "name": "joty-electron",
   "version": "1.0.6",
-  "description": "Jotly — Notes that keep up (Desktop)",
+  "description": "Joty — Notes that keep up (Desktop)",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
@@ -44,8 +44,8 @@
     "wait-on": "^8.0.3"
   },
   "build": {
-    "appId": "io.brandsdal.jotly",
-    "productName": "Jotly",
+    "appId": "io.joty.desktop",
+    "productName": "Joty",
     "directories": {
       "output": "release"
     },
@@ -63,13 +63,13 @@
           ]
         }
       ],
-      "artifactName": "Jotly-Setup-${version}.${ext}"
+      "artifactName": "Joty-Setup-${version}.${ext}"
     },
     "publish": [
       {
         "provider": "github",
         "owner": "cwbrandsdal",
-        "repo": "jotly-electron",
+        "repo": "joty-electron",
         "releaseType": "release"
       }
     ],
@@ -78,7 +78,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Jotly"
+      "shortcutName": "Joty"
     }
   }
 }

@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ──────────────────────────────────────────────────────────
-   Jotly — Editorial Ink Design System
+   Joty — Editorial Ink Design System
    Warm paper light · Deep ink dark · Vermillion accent
    ────────────────────────────────────────────────────────── */
 
@@ -119,7 +119,7 @@ textarea:focus-visible {
 
 /* ── Markdown prose ─────────────────────────────────────── */
 
-.prose-jotly {
+.prose-joty {
   color: var(--color-ink);
   font-family: var(--font-body);
   font-size: 1rem;
@@ -127,12 +127,12 @@ textarea:focus-visible {
   max-width: 72ch;
 }
 
-.prose-jotly h1,
-.prose-jotly h2,
-.prose-jotly h3,
-.prose-jotly h4,
-.prose-jotly h5,
-.prose-jotly h6 {
+.prose-joty h1,
+.prose-joty h2,
+.prose-joty h3,
+.prose-joty h4,
+.prose-joty h5,
+.prose-joty h6 {
   font-family: var(--font-display);
   font-weight: 700;
   color: var(--color-ink);
@@ -141,40 +141,40 @@ textarea:focus-visible {
   line-height: 1.25;
 }
 
-.prose-jotly h1 { font-size: 1.875rem; }
-.prose-jotly h2 { font-size: 1.5rem; }
-.prose-jotly h3 { font-size: 1.25rem; }
-.prose-jotly h4 { font-size: 1.125rem; }
+.prose-joty h1 { font-size: 1.875rem; }
+.prose-joty h2 { font-size: 1.5rem; }
+.prose-joty h3 { font-size: 1.25rem; }
+.prose-joty h4 { font-size: 1.125rem; }
 
-.prose-jotly h2 {
+.prose-joty h2 {
   padding-bottom: 0.25em;
   border-bottom: 1px solid var(--color-border);
 }
 
-.prose-jotly p {
+.prose-joty p {
   margin: 0.75em 0;
 }
 
-.prose-jotly a {
+.prose-joty a {
   color: var(--color-accent);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-.prose-jotly a:hover {
+.prose-joty a:hover {
   color: var(--color-accent-hover);
 }
 
-.prose-jotly strong {
+.prose-joty strong {
   font-weight: 700;
   color: var(--color-ink);
 }
 
-.prose-jotly em {
+.prose-joty em {
   font-style: italic;
 }
 
-.prose-jotly blockquote {
+.prose-joty blockquote {
   margin: 1em 0;
   padding: 0.5em 1em;
   border-left: 3px solid var(--color-accent);
@@ -183,11 +183,11 @@ textarea:focus-visible {
   border-radius: 0 2px 2px 0;
 }
 
-.prose-jotly blockquote p {
+.prose-joty blockquote p {
   margin: 0.25em 0;
 }
 
-.prose-jotly code {
+.prose-joty code {
   font-family: var(--font-mono);
   font-size: 0.875em;
   background: var(--color-panel-alt);
@@ -197,7 +197,7 @@ textarea:focus-visible {
   color: var(--color-accent);
 }
 
-.prose-jotly pre {
+.prose-joty pre {
   margin: 1em 0;
   padding: 1em;
   background: var(--color-panel-alt);
@@ -206,7 +206,7 @@ textarea:focus-visible {
   overflow-x: auto;
 }
 
-.prose-jotly pre code {
+.prose-joty pre code {
   background: none;
   border: none;
   padding: 0;
@@ -215,59 +215,59 @@ textarea:focus-visible {
   line-height: 1.6;
 }
 
-.prose-jotly ul,
-.prose-jotly ol {
+.prose-joty ul,
+.prose-joty ol {
   margin: 0.75em 0;
   padding-left: 1.5em;
 }
 
-.prose-jotly ul { list-style-type: disc; }
-.prose-jotly ol { list-style-type: decimal; }
+.prose-joty ul { list-style-type: disc; }
+.prose-joty ol { list-style-type: decimal; }
 
-.prose-jotly li {
+.prose-joty li {
   margin: 0.25em 0;
 }
 
-.prose-jotly li > ul,
-.prose-jotly li > ol {
+.prose-joty li > ul,
+.prose-joty li > ol {
   margin: 0.25em 0;
 }
 
-.prose-jotly hr {
+.prose-joty hr {
   margin: 1.5em 0;
   border: none;
   border-top: 1px solid var(--color-border);
 }
 
-.prose-jotly img {
+.prose-joty img {
   max-width: 100%;
   border-radius: 2px;
 }
 
-.prose-jotly table {
+.prose-joty table {
   width: 100%;
   border-collapse: collapse;
   margin: 1em 0;
   font-size: 0.875rem;
 }
 
-.prose-jotly th,
-.prose-jotly td {
+.prose-joty th,
+.prose-joty td {
   padding: 0.5em 0.75em;
   border: 1px solid var(--color-border);
   text-align: left;
 }
 
-.prose-jotly th {
+.prose-joty th {
   font-weight: 600;
   background: var(--color-panel-alt);
 }
 
-.prose-jotly del {
+.prose-joty del {
   color: var(--color-ink-muted);
 }
 
-.prose-jotly input[type="checkbox"] {
+.prose-joty input[type="checkbox"] {
   margin-right: 0.5em;
   accent-color: var(--color-accent);
 }

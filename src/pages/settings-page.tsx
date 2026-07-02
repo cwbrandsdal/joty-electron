@@ -13,12 +13,12 @@ interface SettingsPageProps {
 
 export function SettingsPage({ onBack }: SettingsPageProps) {
   const [state, setState] = useState<AppUpdateState>(DEFAULT_STATE);
-  const bridgeAvailable = typeof window.jotly !== "undefined";
+  const bridgeAvailable = typeof window.joty !== "undefined";
 
   useEffect(() => {
     if (!bridgeAvailable) return;
-    window.jotly!.getAppUpdateState().then(setState);
-    const unsub = window.jotly!.onAppUpdateState(setState);
+    window.joty!.getAppUpdateState().then(setState);
+    const unsub = window.joty!.onAppUpdateState(setState);
     return unsub;
   }, [bridgeAvailable]);
 
@@ -45,7 +45,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             <div className="bg-panel border border-border rounded-md p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-ink">Jotly</p>
+                  <p className="text-sm font-medium text-ink">Joty</p>
                   <p className="text-xs text-ink-muted mt-0.5">Version {state.currentVersion}</p>
                 </div>
               </div>
@@ -102,7 +102,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                   state.phase === "not-available" ||
                   state.phase === "error") && (
                   <button
-                    onClick={() => void window.jotly?.checkForAppUpdates()}
+                    onClick={() => void window.joty?.checkForAppUpdates()}
                     className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent/90 transition-colors cursor-pointer"
                   >
                     <RefreshCw size={12} />
@@ -120,7 +120,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                 )}
                 {state.phase === "available" && (
                   <button
-                    onClick={() => void window.jotly?.downloadAppUpdate()}
+                    onClick={() => void window.joty?.downloadAppUpdate()}
                     className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent/90 transition-colors cursor-pointer"
                   >
                     <Download size={12} />
@@ -129,7 +129,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                 )}
                 {state.phase === "downloaded" && (
                   <button
-                    onClick={() => void window.jotly?.installAppUpdate()}
+                    onClick={() => void window.joty?.installAppUpdate()}
                     className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent/90 transition-colors cursor-pointer"
                   >
                     <RotateCcw size={12} />

@@ -303,7 +303,7 @@ export function NoteEditor({ noteId, mode, onTitleChange, onSaveStatusChange }: 
             </div>
           </div>
         ) : (
-          <div className="prose-jotly">
+          <div className="prose-joty">
             {body ? (
               <Markdown remarkPlugins={[remarkGfm]}>{body}</Markdown>
             ) : (

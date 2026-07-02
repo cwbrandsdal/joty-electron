@@ -32,7 +32,7 @@ export function LandingPage() {
             <Feather size={18} className="text-white" />
           </div>
           <span className="text-xl sm:text-2xl font-display font-bold tracking-tight text-ink">
-            Jotly
+            Joty
           </span>
         </div>
         <div className="flex items-center gap-2 sm:gap-3">

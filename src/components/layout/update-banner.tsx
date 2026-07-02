@@ -12,10 +12,10 @@ export function UpdateBanner() {
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!window.jotly) return;
+    if (!window.joty) return;
 
-    window.jotly.getAppUpdateState().then(setState);
-    const unsub = window.jotly.onAppUpdateState(setState);
+    window.joty.getAppUpdateState().then(setState);
+    const unsub = window.joty.onAppUpdateState(setState);
     return unsub;
   }, []);
 
@@ -44,7 +44,7 @@ export function UpdateBanner() {
         {state.phase === "available" && (
           <button
             className="px-3 py-1 text-xs font-medium rounded bg-accent text-white hover:bg-accent/90 transition-colors cursor-pointer"
-            onClick={() => void window.jotly?.downloadAppUpdate()}
+            onClick={() => void window.joty?.downloadAppUpdate()}
           >
             Download update
           </button>
@@ -52,7 +52,7 @@ export function UpdateBanner() {
         {state.phase === "downloaded" && (
           <button
             className="px-3 py-1 text-xs font-medium rounded bg-accent text-white hover:bg-accent/90 transition-colors cursor-pointer"
-            onClick={() => void window.jotly?.installAppUpdate()}
+            onClick={() => void window.joty?.installAppUpdate()}
           >
             Restart to install
           </button>

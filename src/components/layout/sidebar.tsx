@@ -77,7 +77,7 @@ export function Sidebar({
             <Feather size={16} className="text-white" />
           </div>
           <h1 className="text-xl font-display font-bold tracking-tight text-ink">
-            Jotly
+            Joty
           </h1>
         </div>
         <div className="flex items-center gap-1">

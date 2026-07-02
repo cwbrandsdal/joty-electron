@@ -85,7 +85,7 @@ function startStaticServer(root) {
 
 function updateAppUpdateState(nextState) {
   appUpdateState = nextState;
-  mainWindow?.webContents.send('jotly:app-update-state', appUpdateState);
+  mainWindow?.webContents.send('joty:app-update-state', appUpdateState);
 }
 
 function normalizeReleaseNotes(releaseNotes) {
@@ -207,9 +207,9 @@ function configureAutoUpdater() {
 }
 
 function registerIpc() {
-  ipcMain.handle('jotly:get-app-update-state', async () => appUpdateState);
+  ipcMain.handle('joty:get-app-update-state', async () => appUpdateState);
 
-  ipcMain.handle('jotly:check-for-app-updates', async () => {
+  ipcMain.handle('joty:check-for-app-updates', async () => {
     if (!app.isPackaged) {
       updateAppUpdateState({
         phase: 'unsupported',
@@ -223,7 +223,7 @@ function registerIpc() {
     return appUpdateState;
   });
 
-  ipcMain.handle('jotly:download-app-update', async () => {
+  ipcMain.handle('joty:download-app-update', async () => {
     if (!app.isPackaged) {
       updateAppUpdateState({
         phase: 'unsupported',
@@ -237,7 +237,7 @@ function registerIpc() {
     return appUpdateState;
   });
 
-  ipcMain.handle('jotly:install-app-update', async () => {
+  ipcMain.handle('joty:install-app-update', async () => {
     if (appUpdateState.phase !== 'downloaded') return;
     setImmediate(() => {
       autoUpdater.quitAndInstall();
@@ -251,7 +251,7 @@ async function createWindow() {
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    title: 'Jotly',
+    title: 'Joty',
     icon: path.join(__dirname, '..', 'build', 'icon.ico'),
     autoHideMenuBar: true,
     webPreferences: {

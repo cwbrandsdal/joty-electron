@@ -5,8 +5,8 @@ interface OpenTab {
   title: string;
 }
 
-const STORAGE_KEY = "jotly-open-tabs";
-const ACTIVE_TAB_KEY = "jotly-active-tab";
+const STORAGE_KEY = "joty-open-tabs";
+const ACTIVE_TAB_KEY = "joty-active-tab";
 
 function loadTabs(): OpenTab[] {
   try {

@@ -23,7 +23,7 @@ export interface AppUpdateState {
   error?: string;
 }
 
-export interface JotlyApi {
+export interface JotyApi {
   getAppUpdateState: () => Promise<AppUpdateState>;
   checkForAppUpdates: () => Promise<AppUpdateState>;
   downloadAppUpdate: () => Promise<AppUpdateState>;
@@ -33,6 +33,6 @@ export interface JotlyApi {
 
 declare global {
   interface Window {
-    jotly?: JotlyApi;
+    joty?: JotyApi;
   }
 }
