@@ -28,6 +28,24 @@ For local development, configure the WorkOS/AuthKit values in `.env.development`
 - `VITE_WORKOS_REDIRECT_URI`
 - `VITE_API_BASE_URL`
 
+## WorkOS Redirect URIs
+
+Add these callback URLs to the WorkOS application:
+
+| Environment | Redirect URI |
+|-------------|--------------|
+| Electron dev | `http://127.0.0.1:39173/auth/callback` |
+| Packaged Electron | `http://127.0.0.1:39179/auth/callback` |
+
+Optional aliases, useful when testing with alternate hostnames:
+
+- `http://localhost:39173/auth/callback`
+- `http://localhost:39179/auth/callback`
+
+The API CORS allow-list must include the matching origins without paths:
+`http://127.0.0.1:39173`, `http://localhost:39173`,
+`http://127.0.0.1:39179`, and `http://localhost:39179`.
+
 ## Build
 
 ```powershell
