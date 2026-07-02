@@ -125,10 +125,12 @@ export function NoteEditor({ noteId, mode, onTitleChange, onSaveStatusChange }: 
     };
   }, [measureLines]);
 
-  function setSaveStatus(status: SaveStatus) {
+  const saveStatusRef = useRef<SaveStatus>("saved");
+  const setSaveStatus = useCallback((status: SaveStatus) => {
+    saveStatusRef.current = status;
     setSaveStatusLocal(status);
     onSaveStatusChange?.(status);
-  }
+  }, [onSaveStatusChange]);
 
   // Load note data only on initial fetch or when switching notes
   useEffect(() => {
@@ -139,7 +141,7 @@ export function NoteEditor({ noteId, mode, onTitleChange, onSaveStatusChange }: 
       lastSavedRef.current = { title: note.title, body: note.body };
       setSaveStatus("saved");
     }
-  }, [note, noteId]);
+  }, [note, noteId, setSaveStatus]);
 
   const save = useCallback(
     async (newTitle: string, newBody: string) => {
@@ -178,13 +180,27 @@ export function NoteEditor({ noteId, mode, onTitleChange, onSaveStatusChange }: 
         setSaveStatus("unsaved");
       }
     },
-    [noteId, updateNote, generateTitle, onTitleChange],
+    [noteId, updateNote, generateTitle, onTitleChange, setSaveStatus],
   );
 
   const debouncedSave = useDebouncedCallback(
     (t: string, b: string) => save(t, b),
     800,
   );
+
+  // Last line of defense against losing edits: fire the pending save right
+  // away and, while a save is still unconfirmed, ask to warn before closing.
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      debouncedSave.flush();
+      if (saveStatusRef.current !== "saved") {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [debouncedSave]);
 
   const handleTitleChange = (value: string) => {
     setTitle(value);
@@ -305,7 +321,22 @@ export function NoteEditor({ noteId, mode, onTitleChange, onSaveStatusChange }: 
         ) : (
           <div className="prose-joty">
             {body ? (
-              <Markdown remarkPlugins={[remarkGfm]}>{body}</Markdown>
+              <Markdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  // Note links must never navigate the app itself away —
+                  // open them in a new tab (the browser) instead. In the
+                  // desktop shell the window-open handler routes these to the
+                  // system browser.
+                  a: ({ href, children }) => (
+                    <a href={href} target="_blank" rel="noopener noreferrer">
+                      {children}
+                    </a>
+                  ),
+                }}
+              >
+                {body}
+              </Markdown>
             ) : (
               <p className="text-ink-muted italic">Nothing to preview</p>
             )}

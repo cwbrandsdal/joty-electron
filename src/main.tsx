@@ -20,6 +20,10 @@ const redirectUri =
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
+    {/* devMode is required here (unlike joty-web): the desktop shell serves
+        the app from http://127.0.0.1, and AuthKit only persists the session
+        in localStorage in devMode. Moving to an app:// scheme + system-browser
+        auth would let us drop it — tracked as a follow-up. */}
     <AuthKitProvider clientId={clientId} redirectUri={redirectUri} devMode>
       <QueryClientProvider client={queryClient}>
         <App />
