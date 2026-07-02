@@ -44,6 +44,33 @@ function isAuthFlowUrl(url) {
   }
 }
 
+const SELF_ORIGINS = new Set(
+  isDev ? [DEV_URL, `http://127.0.0.1:${PORT}`] : [`http://127.0.0.1:${PORT}`],
+);
+
+function isSelfUrl(url) {
+  try {
+    return SELF_ORIGINS.has(new URL(url).origin);
+  } catch {
+    return false;
+  }
+}
+
+// Strict CSP for the packaged renderer. WorkOS/AuthKit endpoints are needed
+// for sign-in; the Google Fonts hosts until the font files ship locally.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: https:",
+  "connect-src 'self' https://api.joty.io https://api.workos.com https://*.authkit.app",
+  "frame-src https://api.workos.com https://*.authkit.app",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self' https://api.workos.com https://*.authkit.app",
+].join('; ');
+
 function startStaticServer(root) {
   return new Promise((resolve) => {
     server = http.createServer((req, res) => {
@@ -66,9 +93,11 @@ function startStaticServer(root) {
       try {
         const data = fs.readFileSync(filePath);
         const ext = path.extname(filePath).toLowerCase();
-        res.writeHead(200, {
+        const headers = {
           'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-        });
+        };
+        if (ext === '.html') headers['Content-Security-Policy'] = CSP;
+        res.writeHead(200, headers);
         res.end(data);
       } catch {
         res.writeHead(500);
@@ -262,18 +291,36 @@ async function createWindow() {
     show: false,
   });
 
-  // Open external links in default browser
+  // Open external links in default browser. The auth flow is the only thing
+  // allowed to take over the window, and only for https targets — note that
+  // the app's own 127.0.0.1 origin passes isAuthFlowUrl, so it must not count
+  // as "spawned from auth".
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     const currentUrl = mainWindow.webContents.getURL();
-    const isSpawnedFromAuthFlow = isAuthFlowUrl(currentUrl);
+    const isSpawnedFromAuthFlow = isAuthFlowUrl(currentUrl) && !isSelfUrl(currentUrl);
 
-    if (isAuthFlowUrl(url) || isSpawnedFromAuthFlow) {
+    if (isAuthFlowUrl(url) || (isSpawnedFromAuthFlow && url.startsWith('https:'))) {
       mainWindow.loadURL(url);
-    } else if (url.startsWith('http')) {
+    } else if (/^https?:/i.test(url)) {
       shell.openExternal(url);
     }
 
     return { action: 'deny' };
+  });
+
+  // Same-frame navigation guard: the window may only navigate within the app
+  // or into the auth flow. Anything else (e.g. a link inside a note's
+  // markdown preview) opens in the system browser instead of replacing the
+  // app — which would hand the renderer session to an arbitrary site.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (isSelfUrl(url) || isAuthFlowUrl(url)) return;
+
+    const currentUrl = mainWindow.webContents.getURL();
+    const withinAuthFlow = isAuthFlowUrl(currentUrl) && !isSelfUrl(currentUrl);
+    if (withinAuthFlow && url.startsWith('https:')) return; // IdP redirects mid sign-in
+
+    event.preventDefault();
+    if (/^https?:/i.test(url)) shell.openExternal(url);
   });
 
   // Show window when content is ready (avoids white flash)
