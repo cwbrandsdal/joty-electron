@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { Download } from "lucide-react";
-import type { AppUpdateState } from "@/types/electron-api";
+import type { AppUpdateState } from "./electron-api";
 
 const DEFAULT_STATE: AppUpdateState = {
   phase: "unsupported",

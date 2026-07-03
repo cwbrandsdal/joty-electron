@@ -21,8 +21,8 @@
     "noUncheckedSideEffectImports": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["../joty-web/src/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src", "../joty-web/src"]
 }

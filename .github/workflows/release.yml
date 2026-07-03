@@ -14,25 +14,49 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout joty-electron
         uses: actions/checkout@v4
+        with:
+          path: joty-electron
+
+      # The renderer's shared source lives in the sibling joty-web repo.
+      # Access via a read-only deploy key stored as the JOTY_WEB_SSH_KEY secret
+      # (the default GITHUB_TOKEN cannot read other private repos).
+      - name: Checkout joty-web (shared renderer source)
+        uses: actions/checkout@v4
+        with:
+          repository: cwbrandsdal/joty-web
+          path: joty-web
+          ssh-key: ${{ secrets.JOTY_WEB_SSH_KEY }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: joty-electron/package-lock.json
 
-      - name: Install dependencies
+      - name: Install dependencies (joty-web)
         run: npm ci
+        working-directory: joty-web
+
+      - name: Install dependencies (joty-electron)
+        run: npm ci
+        working-directory: joty-electron
 
       - name: Generate app icon
         run: node scripts/generate-icon.mjs
+        working-directory: joty-electron
 
       - name: Build and publish Windows release
         run: npm run release:win
+        working-directory: joty-electron
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional Windows code signing: set the CSC_LINK / CSC_KEY_PASSWORD
+          # repo secrets to enable; electron-builder skips signing when absent.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           VITE_WORKOS_CLIENT_ID: ${{ vars.VITE_WORKOS_CLIENT_ID }}
           VITE_WORKOS_REDIRECT_URI: http://127.0.0.1:39179/auth/callback
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}

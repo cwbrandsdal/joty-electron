@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout joty-electron
+        uses: actions/checkout@v4
+        with:
+          path: joty-electron
+
+      # Renderer source lives in the sibling joty-web repo (see README).
+      # Access via a read-only deploy key stored as the JOTY_WEB_SSH_KEY secret.
+      - name: Checkout joty-web (shared renderer source)
+        uses: actions/checkout@v4
+        with:
+          repository: cwbrandsdal/joty-web
+          path: joty-web
+          ssh-key: ${{ secrets.JOTY_WEB_SSH_KEY }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: joty-electron/package-lock.json
+
+      - name: Install dependencies (joty-web)
+        run: npm ci
+        working-directory: joty-web
+
+      - name: Install dependencies (joty-electron)
+        run: npm ci
+        working-directory: joty-electron
+
+      - name: Lint
+        run: npm run lint
+        working-directory: joty-electron
+
+      - name: Typecheck + build renderer
+        run: npm run build
+        working-directory: joty-electron

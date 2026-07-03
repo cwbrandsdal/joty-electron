@@ -1,12 +1,14 @@
+import type { MenuAction } from "@/platform/platform";
+
 export type AppUpdatePhase =
-  | 'idle'
-  | 'unsupported'
-  | 'checking'
-  | 'available'
-  | 'not-available'
-  | 'downloading'
-  | 'downloaded'
-  | 'error';
+  | "idle"
+  | "unsupported"
+  | "checking"
+  | "available"
+  | "not-available"
+  | "downloading"
+  | "downloaded"
+  | "error";
 
 export interface AppUpdateState {
   phase: AppUpdatePhase;
@@ -29,6 +31,8 @@ export interface JotyApi {
   downloadAppUpdate: () => Promise<AppUpdateState>;
   installAppUpdate: () => Promise<void>;
   onAppUpdateState: (callback: (state: AppUpdateState) => void) => () => void;
+  /** Provided by the application-menu preload bridge; absent in older shells. */
+  onMenuAction?: (callback: (action: MenuAction) => void) => () => void;
 }
 
 declare global {

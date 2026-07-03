@@ -1,6 +1,14 @@
 import { useState, useEffect } from "react";
-import { ArrowLeft, RefreshCw, Download, RotateCcw, CheckCircle2, XCircle, Loader2 } from "lucide-react";
-import type { AppUpdateState } from "@/types/electron-api";
+import {
+  ArrowLeft,
+  RefreshCw,
+  Download,
+  RotateCcw,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+} from "lucide-react";
+import type { AppUpdateState } from "./electron-api";
 
 const DEFAULT_STATE: AppUpdateState = {
   phase: "unsupported",
@@ -41,7 +49,9 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
         <div className="max-w-xl mx-auto p-6 space-y-8">
           {/* About section */}
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted mb-4">About</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted mb-4">
+              About
+            </h3>
             <div className="bg-panel border border-border rounded-md p-4">
               <div className="flex items-center justify-between">
                 <div>
@@ -54,7 +64,9 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
 
           {/* Updates section */}
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted mb-4">Updates</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted mb-4">
+              Updates
+            </h3>
             <div className="bg-panel border border-border rounded-md divide-y divide-border">
               {/* Status */}
               <div className="p-4">
@@ -88,9 +100,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                     </div>
                     <p className="text-xs text-ink-muted mt-1.5">
                       {Math.round(state.percent ?? 0)}%
-                      {state.bytesPerSecond
-                        ? ` — ${formatBytes(state.bytesPerSecond)}/s`
-                        : ""}
+                      {state.bytesPerSecond ? ` — ${formatBytes(state.bytesPerSecond)}/s` : ""}
                     </p>
                   </div>
                 )}

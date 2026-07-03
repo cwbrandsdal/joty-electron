@@ -1,6 +1,6 @@
 {
   "name": "joty-electron",
-  "version": "1.0.7",
+  "version": "1.1.0",
   "description": "Joty — Notes that keep up (Desktop)",
   "main": "electron/main.cjs",
   "type": "module",
@@ -11,13 +11,24 @@
     "package": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win nsis",
     "release:win": "npm run build && electron-builder --win nsis --publish always",
-    "start": "electron ."
+    "start": "electron .",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{cjs,mjs,css,md,json}": [
+      "prettier --write"
+    ]
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.21",
     "@workos-inc/authkit-react": "^0.16.0",
     "clsx": "^2.1.1",
-    "cmdk": "^1.1.1",
     "electron-updater": "^6.8.3",
     "lucide-react": "^0.563.0",
     "react": "^19.2.0",
@@ -28,6 +39,7 @@
     "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@tailwindcss/vite": "^4.1.18",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
@@ -36,10 +48,19 @@
     "concurrently": "^9.1.2",
     "electron": "^43.0.0",
     "electron-builder": "^26.0.12",
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.4.26",
+    "globals": "^16.5.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "png-to-ico": "^3.0.1",
+    "prettier": "^3.9.4",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.1.18",
     "typescript": "~5.9.3",
+    "typescript-eslint": "^8.62.1",
     "vite": "^7.3.1",
     "wait-on": "^8.0.3"
   },

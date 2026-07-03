@@ -2,7 +2,9 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthKitProvider } from "@workos-inc/authkit-react";
-import App from "./App.tsx";
+import App from "@/App";
+import { PlatformProvider } from "@/platform/platform";
+import { desktopPlatform } from "./desktop/platform";
 import "./index.css";
 
 const queryClient = new QueryClient({
@@ -25,9 +27,11 @@ createRoot(document.getElementById("root")!).render(
         in localStorage in devMode. Moving to an app:// scheme + system-browser
         auth would let us drop it — tracked as a follow-up. */}
     <AuthKitProvider clientId={clientId} redirectUri={redirectUri} devMode>
-      <QueryClientProvider client={queryClient}>
-        <App />
-      </QueryClientProvider>
+      <PlatformProvider platform={desktopPlatform}>
+        <QueryClientProvider client={queryClient}>
+          <App />
+        </QueryClientProvider>
+      </PlatformProvider>
     </AuthKitProvider>
   </StrictMode>,
 );
