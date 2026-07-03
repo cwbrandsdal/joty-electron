@@ -48,18 +48,38 @@ For local development, configure the WorkOS/AuthKit values in `.env.development`
 
 ## Keyboard Shortcuts (native menu)
 
-| Shortcut                      | Action                       |
-| ----------------------------- | ---------------------------- |
-| `Ctrl+K`                      | Quick open (command palette) |
-| `Ctrl+N`                      | New note                     |
-| `Ctrl+W`                      | Close tab                    |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab          |
-| `Ctrl+P`                      | Pin/unpin current note       |
-| `Ctrl+E`                      | Toggle edit/preview          |
-| `Ctrl+,`                      | Settings                     |
-| `Ctrl+F` or `/`               | Focus sidebar search         |
+| Shortcut                      | Action                               |
+| ----------------------------- | ------------------------------------ |
+| `Ctrl+K`                      | Quick open (command palette)         |
+| `Ctrl+N`                      | New note                             |
+| `Ctrl+W`                      | Close tab                            |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab                  |
+| `Ctrl+P`                      | Pin/unpin current note               |
+| `Ctrl+E`                      | Toggle edit/preview                  |
+| `Ctrl+Shift+E`                | Export current note as PDF           |
+| `Ctrl+Shift+J`                | Quick capture (global, configurable) |
+| `Ctrl+,`                      | Settings                             |
+| `Ctrl+F` or `/`               | Focus sidebar search                 |
 
 The menu bar is hidden by default — press `Alt` to reveal it. Accelerators work while it is hidden.
+
+## Desktop Features
+
+Beyond wrapping the web app, the desktop shell adds:
+
+- **System tray** — Open, New Note, Quick Capture, Check for Updates, Quit; optional
+  minimize-to-tray (keeps Joty running when the window is closed).
+- **Quick capture** — a global hotkey opens a small always-on-top scratch window that posts a
+  note to your account and dismisses itself.
+- **Deep links** — `joty://note/<id>` and `joty://new` focus the app and open/create a note.
+- **Window state** — size, position, and maximized state are remembered across launches.
+- **Launch at login**, **zoom persistence**, and **automatic update downloads** — all toggleable
+  in Settings → Desktop.
+- **Spellcheck** — right-click a misspelling for suggestions and add-to-dictionary.
+- **Print / export to PDF** — the current note's rendered preview, via the OS save dialog.
+
+Native preferences are stored in `joty-settings.json` / `joty-window.json` under the app's
+`userData` directory.
 
 ## WorkOS Redirect URIs
 

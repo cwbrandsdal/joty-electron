@@ -7,4 +7,6 @@ export const desktopPlatform: Platform = {
   Banner: UpdateBanner,
   SettingsPage,
   onMenuAction: (handler) => window.joty?.onMenuAction?.(handler) ?? (() => {}),
+  onOpenNote: (handler) => window.joty?.onOpenNote?.(handler) ?? (() => {}),
+  printNoteToPdf: () => void window.joty?.printNoteToPdf?.(),
 };

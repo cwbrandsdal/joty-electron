@@ -25,6 +25,20 @@ export interface AppUpdateState {
   error?: string;
 }
 
+export interface DesktopSettings {
+  launchAtLogin: boolean;
+  minimizeToTray: boolean;
+  autoDownloadUpdates: boolean;
+  quickCaptureShortcut: string;
+  zoomFactor: number;
+}
+
+export interface PdfExportResult {
+  ok: boolean;
+  filePath?: string;
+  error?: string;
+}
+
 export interface JotyApi {
   getAppUpdateState: () => Promise<AppUpdateState>;
   checkForAppUpdates: () => Promise<AppUpdateState>;
@@ -33,6 +47,12 @@ export interface JotyApi {
   onAppUpdateState: (callback: (state: AppUpdateState) => void) => () => void;
   /** Provided by the application-menu preload bridge; absent in older shells. */
   onMenuAction?: (callback: (action: MenuAction) => void) => () => void;
+  onOpenNote?: (callback: (noteId: string) => void) => () => void;
+  getSettings: () => Promise<DesktopSettings>;
+  updateSettings: (partial: Partial<DesktopSettings>) => Promise<DesktopSettings>;
+  printNoteToPdf: () => Promise<PdfExportResult>;
+  isQuickCapture: () => Promise<boolean>;
+  closeQuickCapture: () => Promise<void>;
 }
 
 declare global {
