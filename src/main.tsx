@@ -5,6 +5,7 @@ import { AuthKitProvider } from "@workos-inc/authkit-react";
 import App from "@/App";
 import { PlatformProvider } from "@/platform/platform";
 import { desktopPlatform } from "./desktop/platform";
+import { DesktopAuthProvider } from "./desktop/desktop-auth-provider";
 import "./index.css";
 
 const queryClient = new QueryClient({
@@ -27,11 +28,13 @@ createRoot(document.getElementById("root")!).render(
         in localStorage in devMode. Moving to an app:// scheme + system-browser
         auth would let us drop it — tracked as a follow-up. */}
     <AuthKitProvider clientId={clientId} redirectUri={redirectUri} devMode>
-      <PlatformProvider platform={desktopPlatform}>
-        <QueryClientProvider client={queryClient}>
-          <App />
-        </QueryClientProvider>
-      </PlatformProvider>
+      <DesktopAuthProvider>
+        <PlatformProvider platform={desktopPlatform}>
+          <QueryClientProvider client={queryClient}>
+            <App />
+          </QueryClientProvider>
+        </PlatformProvider>
+      </DesktopAuthProvider>
     </AuthKitProvider>
   </StrictMode>,
 );

@@ -81,6 +81,11 @@ Beyond wrapping the web app, the desktop shell adds:
 Native preferences are stored in `joty-settings.json` / `joty-window.json` under the app's
 `userData` directory.
 
+The shared UI consumes the shell-neutral `JotyAuthProvider` contract. Electron's
+`DesktopAuthProvider` adapts the WorkOS SDK to that contract and registers its
+access-token provider with the shared API client. This preserves bearer-token
+authentication for desktop while the website uses the API's HttpOnly BFF session.
+
 ## WorkOS Redirect URIs
 
 Add these callback URLs to the WorkOS application:
