@@ -9,6 +9,7 @@ const {
   globalShortcut,
   nativeImage,
   protocol,
+  screen,
 } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
@@ -632,8 +633,33 @@ function persistWindowState() {
 
 // --- Main window ---
 
+/**
+ * A saved position is only reused when it is still (mostly) on a connected
+ * display. Monitor layouts change — docking, RDP, a smaller laptop screen —
+ * and restoring coordinates from a monitor that no longer exists puts the
+ * window somewhere the user can't see or click. In that case the size is kept
+ * and the position is dropped so Electron centers the window.
+ */
+function usableWindowState(saved) {
+  if (!saved) return null;
+  if (typeof saved.x !== "number" || typeof saved.y !== "number") return saved;
+  const width = saved.width ?? 1280;
+  const height = saved.height ?? 800;
+  const visible = screen.getAllDisplays().some(({ workArea }) => {
+    const overlapX =
+      Math.min(saved.x + width, workArea.x + workArea.width) - Math.max(saved.x, workArea.x);
+    const overlapY =
+      Math.min(saved.y + height, workArea.y + workArea.height) - Math.max(saved.y, workArea.y);
+    // Require a meaningful chunk on screen, not just a sliver of the frame.
+    return overlapX >= Math.min(200, width) && overlapY >= Math.min(120, height);
+  });
+  if (visible) return saved;
+  console.log("Saved window position is off every display; centering instead");
+  return { width, height, maximized: saved.maximized };
+}
+
 async function createWindow() {
-  const saved = loadWindowState();
+  const saved = usableWindowState(loadWindowState());
   mainWindow = new BrowserWindow({
     width: saved?.width ?? 1280,
     height: saved?.height ?? 800,
