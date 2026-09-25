@@ -71,9 +71,24 @@ Sign-in is owned by the Electron main process (`electron/auth.cjs`), not the ren
 - Signed out is never triggered by navigation: the app shows its landing page with a Sign in
   button instead of bouncing to WorkOS on its own.
 
-Notes are local-first (see joty-web `docs/architecture.md`): edits are saved to IndexedDB
-immediately and synced in the background, the last-known notes render before the network
+Notes are local-first (see joty-web `docs/architecture.md`): edits, pins, archiving, deletes,
+tags and folder moves are saved locally and synced in the background, a complete copy of your
+notes is kept for offline search and quick-open, the last-known notes render before the network
 answers, and quick capture works offline.
+
+## Defaults & Diagnostics
+
+- **Defaults** suit an app that stays open for weeks: minimize-to-tray, launch at login and
+  automatic update downloads are on unless you turn them off in Settings → Desktop. Existing
+  installs keep whatever they had chosen.
+- **Log file**: the main process writes `%APPDATA%\joty-electron\logs\joty-main.log` (rotated at
+  1 MB, three generations): startup, settings, auth state transitions (never tokens), sync
+  failures reported by the renderer, renderer console errors, crashes and updater events.
+- **Copy diagnostics** (Settings → Desktop) puts a report on the clipboard: versions, OS,
+  displays, window bounds, settings, sign-in state, update state and the last 200 log lines.
+  No note content is included. Paste it when reporting a problem.
+- `npm run lint` also runs `scripts/check-shared-deps.mjs`, which fails when the shared runtime
+  packages differ from joty-web's installed versions.
 
 ## Keyboard Shortcuts (native menu)
 

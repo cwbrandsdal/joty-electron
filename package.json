@@ -1,6 +1,6 @@
 {
   "name": "joty-electron",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Joty — Notes that keep up (Desktop)",
   "main": "electron/main.cjs",
   "type": "module",
@@ -12,9 +12,10 @@
     "dist:win": "npm run build && electron-builder --win nsis",
     "release:win": "npm run build && electron-builder --win nsis --publish always",
     "start": "electron .",
-    "lint": "eslint .",
+    "lint": "node scripts/check-shared-deps.mjs && eslint .",
     "format": "prettier --write .",
-    "prepare": "husky"
+    "prepare": "husky",
+    "test": "node --test electron/*.test.cjs"
   },
   "lint-staged": {
     "*.{ts,tsx}": [

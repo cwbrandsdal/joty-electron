@@ -1,10 +1,26 @@
 import { useEffect, useState } from "react";
+import { ClipboardCopy } from "lucide-react";
+import { useToast } from "@/components/ui/toast";
 import type { DesktopSettings } from "./electron-api";
 
 /** Desktop-only preferences (launch at login, tray, updates, capture hotkey). */
 export function NativeSettings() {
   const [settings, setSettings] = useState<DesktopSettings | null>(null);
   const bridge = typeof window.joty !== "undefined";
+  const { toast } = useToast();
+
+  async function copyDiagnostics() {
+    try {
+      const result = await window.joty?.copyDiagnostics?.();
+      toast({
+        title: result?.ok ? "Diagnostics copied to clipboard" : "Couldn't build diagnostics",
+        description: result?.file ? `Log file: ${result.file}` : undefined,
+        variant: result?.ok ? "success" : "error",
+      });
+    } catch {
+      toast({ title: "Couldn't build diagnostics", variant: "error" });
+    }
+  }
 
   useEffect(() => {
     if (!bridge) return;
@@ -50,6 +66,20 @@ export function NativeSettings() {
           }}
           className="mt-1 w-64 rounded-sm border border-border bg-page px-2 py-1 text-sm text-ink outline-none focus:border-accent"
         />
+      </div>
+      <div>
+        <button
+          type="button"
+          onClick={() => void copyDiagnostics()}
+          className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-panel-alt px-2.5 py-1 text-xs text-ink-secondary hover:bg-hover hover:text-ink transition-colors cursor-pointer"
+        >
+          <ClipboardCopy size={13} />
+          Copy diagnostics
+        </button>
+        <p className="mt-1 text-xs text-ink-muted">
+          Versions, settings, sign-in state and the last log lines — no note content. Paste it when
+          reporting a problem.
+        </p>
       </div>
     </div>
   );

@@ -10,6 +10,7 @@ const {
   nativeImage,
   protocol,
   screen,
+  clipboard,
 } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
@@ -17,6 +18,7 @@ const fs = require("fs");
 const { loadSettings, saveSettings, loadWindowState, saveWindowState } = require("./store.cjs");
 const { loadDesktopConfig } = require("./desktop-config.cjs");
 const { AuthManager } = require("./auth.cjs");
+const log = require("./log.cjs");
 
 // Loopback port registered with WorkOS as the desktop redirect URI. It is
 // only listened on while a sign-in is in progress (see auth.cjs).
@@ -201,9 +203,14 @@ function createAuthManager() {
       focusMainWindow();
       mainWindow?.loadURL(`${appBaseUrl()}${returnTo}`);
     },
-    onStateChange: (state) => broadcast("joty:auth-state", state),
+    onStateChange: (state) => {
+      log.info(`[auth] state → ${state.status}${state.error ? ` (${state.error})` : ""}`);
+      broadcast("joty:auth-state", state);
+    },
+    logger: log,
   });
   manager.initialize();
+  log.info(`[auth] initialized: ${manager.getState().status}`);
   return manager;
 }
 
@@ -291,6 +298,7 @@ function configureAutoUpdater() {
   });
 
   autoUpdater.on("update-downloaded", (info) => {
+    log.info(`[updater] downloaded ${info.version}`);
     updateAppUpdateState({
       phase: "downloaded",
       currentVersion: app.getVersion(),
@@ -305,6 +313,7 @@ function configureAutoUpdater() {
   });
 
   autoUpdater.on("error", (error) => {
+    log.warn("[updater] error", error?.message ?? String(error));
     updateAppUpdateState({
       ...appUpdateState,
       phase: "error",
@@ -428,6 +437,7 @@ function openQuickCapture() {
     show: false,
   });
 
+  attachRendererLogging(captureWindow.webContents, "capture");
   captureWindow.loadURL(`${appBaseUrl()}/?capture=1`);
   captureWindow.once("ready-to-show", () => {
     captureWindow.show();
@@ -544,6 +554,56 @@ function buildApplicationMenu() {
   return Menu.buildFromTemplate(template);
 }
 
+// --- Diagnostics ---
+
+// Renderer warnings/errors and crashes go to the main log so a broken
+// install can be understood from one file. Electron ≥ 35 passes an event
+// object with details; older versions pass positional arguments.
+function attachRendererLogging(webContents, name) {
+  webContents.on("console-message", (event, ...legacy) => {
+    const level = event?.level ?? legacy[0];
+    const message = event?.message ?? legacy[1];
+    const source = event?.sourceId ?? legacy[3];
+    const isError = level === "error" || level === 3;
+    const isWarning = level === "warning" || level === 2;
+    if (!isError && !isWarning) return;
+    const text = `[renderer:${name}] ${message}${source ? ` (${source})` : ""}`;
+    if (isError) log.error(text);
+    else log.warn(text);
+  });
+  webContents.on("render-process-gone", (_event, details) => {
+    log.error(`[renderer:${name}] process gone: ${details.reason} (exit ${details.exitCode})`);
+  });
+  webContents.on("unresponsive", () => log.warn(`[renderer:${name}] unresponsive`));
+  webContents.on("responsive", () => log.info(`[renderer:${name}] responsive again`));
+}
+
+function diagnosticsReport() {
+  const authState = auth?.getState() ?? { status: "unknown" };
+  const lines = [
+    `Joty ${app.getVersion()} (${app.isPackaged ? "packaged" : "from source"})`,
+    `Electron ${process.versions.electron}, Chromium ${process.versions.chrome}, Node ${process.versions.node}`,
+    `OS ${process.platform} ${process.getSystemVersion?.() ?? ""} ${process.arch}`,
+    `Generated ${new Date().toISOString()}`,
+    `User data: ${app.getPath("userData")}`,
+    `API: ${desktopConfig.apiBaseUrl}`,
+    `Auth: ${authState.status}${authState.user?.email ? ` as ${authState.user.email}` : ""}${authState.error ? `, last error: ${authState.error}` : ""}`,
+    `Settings: ${JSON.stringify(settings)}`,
+    `Displays: ${screen
+      .getAllDisplays()
+      .map((d) => `${d.bounds.width}x${d.bounds.height}@${d.bounds.x},${d.bounds.y}`)
+      .join(" | ")}`,
+    `Window: ${
+      mainWindow && !mainWindow.isDestroyed() ? JSON.stringify(mainWindow.getBounds()) : "none"
+    }`,
+    `Update: ${appUpdateState.phase}${appUpdateState.error ? ` (${appUpdateState.error})` : ""}`,
+    "",
+    `--- last log lines (${log.file ?? "no log file"}) ---`,
+    log.tail(200),
+  ];
+  return lines.join("\n");
+}
+
 // --- Spellcheck / editing context menu ---
 
 function attachContextMenu(webContents) {
@@ -654,7 +714,7 @@ function usableWindowState(saved) {
     return overlapX >= Math.min(200, width) && overlapY >= Math.min(120, height);
   });
   if (visible) return saved;
-  console.log("Saved window position is off every display; centering instead");
+  log.warn("Saved window position is off every display; centering instead", saved);
   return { width, height, maximized: saved.maximized };
 }
 
@@ -703,6 +763,7 @@ async function createWindow() {
   });
 
   attachContextMenu(mainWindow.webContents);
+  attachRendererLogging(mainWindow.webContents, "main");
 
   mainWindow.webContents.on("did-finish-load", () => {
     mainWindow.webContents.setZoomFactor(settings.zoomFactor || 1);
@@ -745,6 +806,18 @@ function registerIpc() {
     await auth.signOut();
     // Land on the landing page rather than a protected route.
     mainWindow?.loadURL(`${appBaseUrl()}/`);
+  });
+
+  ipcMain.handle("joty:log", (_event, level, message) => {
+    const text = `[renderer] ${String(message).slice(0, 2000)}`;
+    if (level === "error") log.error(text);
+    else if (level === "warn") log.warn(text);
+    else log.info(text);
+  });
+  ipcMain.handle("joty:copy-diagnostics", () => {
+    const report = diagnosticsReport();
+    clipboard.writeText(report);
+    return { ok: true, length: report.length, file: log.file };
   });
 
   ipcMain.handle("joty:get-app-update-state", async () => appUpdateState);
@@ -820,8 +893,21 @@ if (!gotLock) {
     handleDeepLink(url);
   });
 
+  process.on("uncaughtException", (error) => log.error("[main] uncaught exception", error));
+  process.on("unhandledRejection", (reason) => log.error("[main] unhandled rejection", reason));
+  app.on("child-process-gone", (_event, details) => {
+    log.error(
+      `[main] child process gone: ${details.type} ${details.reason} (exit ${details.exitCode})`,
+    );
+  });
+
   app.whenReady().then(() => {
+    log.init(app.getPath("userData"), { console: !app.isPackaged });
+    log.info(
+      `Joty ${app.getVersion()} starting (electron ${process.versions.electron}, ${process.platform} ${process.arch}, ${app.isPackaged ? "packaged" : "source"})`,
+    );
     settings = loadSettings();
+    log.info("settings", settings);
 
     if (isDev && process.argv.length >= 2) {
       app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
@@ -845,6 +931,7 @@ if (!gotLock) {
 
   app.on("before-quit", () => {
     isQuitting = true;
+    log.info("quitting");
     persistWindowState();
   });
 

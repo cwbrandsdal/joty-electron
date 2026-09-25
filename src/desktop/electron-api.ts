@@ -69,9 +69,18 @@ export interface DesktopAuthApi {
   onState: (callback: (state: DesktopAuthState) => void) => () => void;
 }
 
+export interface DiagnosticsResult {
+  ok: boolean;
+  length: number;
+  file: string | null;
+}
+
 export interface JotyApi {
   /** Main-process authentication bridge (absent in shells older than 1.4). */
   auth?: DesktopAuthApi;
+  /** Append to the main-process log (absent in shells older than 1.5). */
+  log?: (level: "info" | "warn" | "error", message: string) => Promise<void>;
+  copyDiagnostics?: () => Promise<DiagnosticsResult>;
   getAppUpdateState: () => Promise<AppUpdateState>;
   checkForAppUpdates: () => Promise<AppUpdateState>;
   downloadAppUpdate: () => Promise<AppUpdateState>;

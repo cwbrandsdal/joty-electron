@@ -16,6 +16,12 @@ contextBridge.exposeInMainWorld("joty", {
     onState: (callback) => subscribe("joty:auth-state", callback),
   },
 
+  // --- Diagnostics ---
+  /** Append a line to the main-process log file (no secrets, no note text). */
+  log: (level, message) => ipcRenderer.invoke("joty:log", level, message),
+  /** Build a diagnostics report, copy it to the clipboard, and return its size. */
+  copyDiagnostics: () => ipcRenderer.invoke("joty:copy-diagnostics"),
+
   // --- Auto-update ---
   getAppUpdateState: () => ipcRenderer.invoke("joty:get-app-update-state"),
   checkForAppUpdates: () => ipcRenderer.invoke("joty:check-for-app-updates"),

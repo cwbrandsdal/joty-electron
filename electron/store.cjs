@@ -9,10 +9,13 @@ const fs = require("fs");
 const SETTINGS_FILE = () => path.join(app.getPath("userData"), "joty-settings.json");
 const WINDOW_FILE = () => path.join(app.getPath("userData"), "joty-window.json");
 
+// Defaults suit a notes app that is meant to stay open for weeks: closing the
+// window keeps Joty in the tray, it comes back at login, and updates download
+// on their own. Each is a toggle in Settings → Desktop.
 const DEFAULT_SETTINGS = {
-  launchAtLogin: false,
-  minimizeToTray: false,
-  autoDownloadUpdates: false,
+  launchAtLogin: true,
+  minimizeToTray: true,
+  autoDownloadUpdates: true,
   quickCaptureShortcut: "CommandOrControl+Shift+J",
   zoomFactor: 1,
 };

@@ -44,6 +44,10 @@ jobs:
         run: npm run lint
         working-directory: joty-electron
 
+      - name: Test (main-process auth)
+        run: npm test
+        working-directory: joty-electron
+
       - name: Typecheck + build renderer
         run: npm run build
         working-directory: joty-electron
