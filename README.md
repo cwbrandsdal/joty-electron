@@ -39,12 +39,41 @@ cd ..\joty-electron; npm install
 npm run dev
 ```
 
-For local development, configure the WorkOS/AuthKit values in `.env.development` or copy
-`.env.example` and set:
+For local development, configure the values in `.env.development` or copy `.env.example` and set:
 
-- `VITE_WORKOS_CLIENT_ID`
-- `VITE_WORKOS_REDIRECT_URI`
+- `VITE_WORKOS_CLIENT_ID` — public AuthKit client id (used by the main process for sign-in)
 - `VITE_API_BASE_URL`
+
+The main process reads them from the `.env` files when running from source; `npm run build`
+writes them to `electron/desktop-config.json` (gitignored) for packaged builds.
+
+To smoke-test the packaged code path (custom `app://joty` scheme, built renderer) without
+packaging: `npm run build`, then set `JOTY_USE_BUILT_RENDERER=1` and run `npm start`.
+
+`@tanstack/react-query`, `@tanstack/react-query-persist-client` and `idb-keyval` are pinned to
+the exact versions installed in joty-web: the renderer source is shared, and TypeScript only
+unifies duplicate packages when name and version match.
+
+## Authentication & Sessions
+
+Sign-in is owned by the Electron main process (`electron/auth.cjs`), not the renderer:
+
+- The hosted AuthKit page opens in the app window (PKCE, public client, no API key) and
+  redirects to a loopback listener on `127.0.0.1:39179` that only exists during sign-in.
+- The refresh token is stored encrypted with the OS keychain (`safeStorage`, DPAPI on Windows)
+  in `%APPDATA%\joty-electron\joty-auth.bin`. The renderer only ever receives short-lived access
+  tokens over IPC (`window.joty.auth`).
+- Tokens refresh proactively a minute before expiry, also while the window is hidden, after
+  sleep/resume, screen unlock, and whenever the window regains focus.
+- Only a terminal WorkOS `invalid_grant` signs you out. Offline periods, timeouts, 5xx and
+  429 keep the session and retry with backoff (1 s, 3 s, 8 s, then up to 10 min), so a lost
+  refresh response is replayed inside WorkOS's 30-second grace window.
+- Signed out is never triggered by navigation: the app shows its landing page with a Sign in
+  button instead of bouncing to WorkOS on its own.
+
+Notes are local-first (see joty-web `docs/architecture.md`): edits are saved to IndexedDB
+immediately and synced in the background, the last-known notes render before the network
+answers, and quick capture works offline.
 
 ## Keyboard Shortcuts (native menu)
 
@@ -88,21 +117,14 @@ authentication for desktop while the website uses the API's HttpOnly BFF session
 
 ## WorkOS Redirect URIs
 
-Add these callback URLs to the WorkOS application:
+Add this callback URL to the WorkOS application (used from source and packaged alike):
 
-| Environment       | Redirect URI                           |
-| ----------------- | -------------------------------------- |
-| Electron dev      | `http://127.0.0.1:39173/auth/callback` |
-| Packaged Electron | `http://127.0.0.1:39179/auth/callback` |
+| Environment | Redirect URI                           |
+| ----------- | -------------------------------------- |
+| Desktop     | `http://127.0.0.1:39179/auth/callback` |
 
-Optional aliases, useful when testing with alternate hostnames:
-
-- `http://localhost:39173/auth/callback`
-- `http://localhost:39179/auth/callback`
-
-The API CORS allow-list must include the matching origins without paths:
-`http://127.0.0.1:39173`, `http://localhost:39173`,
-`http://127.0.0.1:39179`, and `http://localhost:39179`.
+The API CORS allow-list must include the renderer origins: `app://joty` (packaged) and
+`http://127.0.0.1:39173` (Vite dev server). Both are in joty-api's default configuration.
 
 ## Build
 

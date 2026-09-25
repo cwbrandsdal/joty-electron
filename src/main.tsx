@@ -1,40 +1,25 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { AuthKitProvider } from "@workos-inc/authkit-react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import App from "@/App";
 import { PlatformProvider } from "@/platform/platform";
+import { queryClient } from "@/lib/query-persist";
 import { desktopPlatform } from "./desktop/platform";
 import { DesktopAuthProvider } from "./desktop/desktop-auth-provider";
 import "./index.css";
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 30_000,
-      retry: 1,
-    },
-  },
-});
-
-const clientId = import.meta.env.VITE_WORKOS_CLIENT_ID || "";
-const redirectUri =
-  import.meta.env.VITE_WORKOS_REDIRECT_URI || "http://127.0.0.1:39173/auth/callback";
-
+// The desktop app shares the web app's IndexedDB-persisted query cache, so a
+// launch renders the last-known notes immediately instead of waiting on the
+// network. Authentication is owned by the Electron main process (see
+// electron/auth.cjs); DesktopAuthProvider mirrors it over IPC.
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    {/* devMode is required here (unlike joty-web): the desktop shell serves
-        the app from http://127.0.0.1, and AuthKit only persists the session
-        in localStorage in devMode. Moving to an app:// scheme + system-browser
-        auth would let us drop it — tracked as a follow-up. */}
-    <AuthKitProvider clientId={clientId} redirectUri={redirectUri} devMode>
+    <PlatformProvider platform={desktopPlatform}>
       <DesktopAuthProvider>
-        <PlatformProvider platform={desktopPlatform}>
-          <QueryClientProvider client={queryClient}>
-            <App />
-          </QueryClientProvider>
-        </PlatformProvider>
+        <QueryClientProvider client={queryClient}>
+          <App />
+        </QueryClientProvider>
       </DesktopAuthProvider>
-    </AuthKitProvider>
+    </PlatformProvider>
   </StrictMode>,
 );

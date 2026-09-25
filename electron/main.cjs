@@ -8,17 +8,46 @@ const {
   dialog,
   globalShortcut,
   nativeImage,
+  protocol,
 } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
-const http = require("http");
 const fs = require("fs");
 const { loadSettings, saveSettings, loadWindowState, saveWindowState } = require("./store.cjs");
+const { loadDesktopConfig } = require("./desktop-config.cjs");
+const { AuthManager } = require("./auth.cjs");
 
-const PORT = 39179;
-const isDev = !app.isPackaged;
+// Loopback port registered with WorkOS as the desktop redirect URI. It is
+// only listened on while a sign-in is in progress (see auth.cjs).
+const AUTH_CALLBACK_PORT = 39179;
+// The packaged renderer is served from its own origin instead of a local HTTP
+// port: no port collisions, a stable storage origin, and no need for the
+// WorkOS browser SDK's dev mode.
+const APP_SCHEME = "app";
+const APP_HOST = "joty";
+const APP_ORIGIN = `${APP_SCHEME}://${APP_HOST}`;
+// Running from source loads the Vite dev server unless told to use the built
+// renderer (handy for smoke-testing the packaged code path unpackaged).
+const useBuiltRenderer = app.isPackaged || process.env.JOTY_USE_BUILT_RENDERER === "1";
+const isDev = !useBuiltRenderer;
 const DEV_URL = "http://127.0.0.1:39173";
 const PROTOCOL = "joty";
+const desktopConfig = loadDesktopConfig({ isPackaged: app.isPackaged });
+
+// Must run before app.whenReady(): makes app:// behave like https:// for
+// storage, fetch, CORS and service workers.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: APP_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
+]);
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -35,7 +64,7 @@ const MIME_TYPES = {
   ".map": "application/json",
 };
 
-let server = null;
+let auth = null;
 let mainWindow = null;
 let captureWindow = null;
 let tray = null;
@@ -55,16 +84,14 @@ function isAuthFlowUrl(url) {
     return (
       parsed.hostname === "api.workos.com" ||
       parsed.hostname.endsWith(".authkit.app") ||
-      (parsed.hostname === "127.0.0.1" && parsed.port === String(PORT))
+      (parsed.hostname === "127.0.0.1" && parsed.port === String(AUTH_CALLBACK_PORT))
     );
   } catch {
     return false;
   }
 }
 
-const SELF_ORIGINS = new Set(
-  isDev ? [DEV_URL, `http://127.0.0.1:${PORT}`] : [`http://127.0.0.1:${PORT}`],
-);
+const SELF_ORIGINS = new Set(isDev ? [DEV_URL, APP_ORIGIN] : [APP_ORIGIN]);
 
 function isSelfUrl(url) {
   try {
@@ -75,65 +102,108 @@ function isSelfUrl(url) {
 }
 
 function appBaseUrl() {
-  return isDev ? DEV_URL : `http://127.0.0.1:${PORT}`;
+  return isDev ? DEV_URL : APP_ORIGIN;
 }
 
-// Strict CSP for the packaged renderer. WorkOS/AuthKit endpoints are needed
-// for sign-in; fonts are self-hosted (@fontsource), so no font CDNs. The
-// realtime hub and API live on api.joty.io (https + wss for SignalR).
+function apiOrigins() {
+  try {
+    const api = new URL(desktopConfig.apiBaseUrl);
+    const ws = api.protocol === "https:" ? "wss:" : "ws:";
+    return [api.origin, `${ws}//${api.host}`];
+  } catch {
+    return ["https://api.joty.io", "wss://api.joty.io"];
+  }
+}
+
+// Strict CSP for the packaged renderer. Sign-in happens in the main process,
+// so the renderer only ever talks to the Joty API (https + wss for SignalR).
+// Fonts are self-hosted (@fontsource).
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",
   "img-src 'self' data: https: blob:",
-  "connect-src 'self' https://api.joty.io wss://api.joty.io https://api.workos.com https://*.authkit.app",
-  "frame-src https://api.workos.com https://*.authkit.app",
+  `connect-src 'self' ${apiOrigins().join(" ")}`,
+  "frame-src 'none'",
   "object-src 'none'",
   "base-uri 'self'",
-  "form-action 'self' https://api.workos.com https://*.authkit.app",
+  "form-action 'self'",
 ].join("; ");
 
-function startStaticServer(root) {
-  return new Promise((resolve, reject) => {
-    server = http.createServer((req, res) => {
-      const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
-      let filePath = path.join(root, url.pathname);
+let appProtocolRegistered = false;
 
-      try {
-        const stat = fs.statSync(filePath);
-        if (stat.isDirectory()) filePath = path.join(filePath, "index.html");
-      } catch {
-        // file doesn't exist — SPA fallback below
-      }
+// Serves dist/renderer at app://joty with an SPA fallback, replacing the old
+// loopback HTTP server. Hashed assets are cacheable forever; index.html never.
+function registerAppProtocol(root) {
+  if (appProtocolRegistered) return;
+  appProtocolRegistered = true;
+  const normalizedRoot = path.resolve(root);
+  const indexHtml = path.join(normalizedRoot, "index.html");
 
-      if (!fs.existsSync(filePath)) {
-        filePath = path.join(root, "index.html");
-      }
+  protocol.handle(APP_SCHEME, async (request) => {
+    let url;
+    try {
+      url = new URL(request.url);
+    } catch {
+      return new Response("Bad request", { status: 400 });
+    }
+    if (url.host !== APP_HOST) return new Response("Not found", { status: 404 });
 
-      try {
-        const data = fs.readFileSync(filePath);
-        const ext = path.extname(filePath).toLowerCase();
-        const headers = {
-          "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
-        };
-        if (ext === ".html") headers["Content-Security-Policy"] = CSP;
-        res.writeHead(200, headers);
-        res.end(data);
-      } catch {
-        res.writeHead(500);
-        res.end("Internal Server Error");
-      }
-    });
+    let filePath = path.resolve(normalizedRoot, "." + decodeURIComponent(url.pathname));
+    if (!filePath.startsWith(normalizedRoot)) return new Response("Forbidden", { status: 403 });
 
-    // Without this, a squatted port throws an unhandled error while the window
-    // is still hidden and the app appears to hang.
-    server.on("error", (err) => reject(err));
-    server.listen(PORT, "127.0.0.1", () => {
-      console.log(`Static server running at http://127.0.0.1:${PORT}`);
-      resolve(server);
-    });
+    try {
+      const stat = await fs.promises.stat(filePath);
+      if (stat.isDirectory()) filePath = indexHtml;
+    } catch {
+      // Not a file — a client-side route; serve the shell.
+      filePath = indexHtml;
+    }
+
+    try {
+      const data = await fs.promises.readFile(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+      const headers = {
+        "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
+        "Cache-Control":
+          filePath === indexHtml ? "no-store" : "public, max-age=31536000, immutable",
+      };
+      if (ext === ".html") headers["Content-Security-Policy"] = CSP;
+      return new Response(data, { status: 200, headers });
+    } catch {
+      return new Response("Not found", { status: 404 });
+    }
   });
+}
+
+// --- Authentication (main-process owned; the renderer talks over IPC) ---
+
+function broadcast(channel, payload) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send(channel, payload);
+    }
+  }
+}
+
+function createAuthManager() {
+  const manager = new AuthManager({
+    clientId: desktopConfig.workosClientId,
+    callbackPort: AUTH_CALLBACK_PORT,
+    userDataPath: app.getPath("userData"),
+    openAuthUrl: (url) => {
+      focusMainWindow();
+      mainWindow?.loadURL(url);
+    },
+    onSignInFinished: (returnTo) => {
+      focusMainWindow();
+      mainWindow?.loadURL(`${appBaseUrl()}${returnTo}`);
+    },
+    onStateChange: (state) => broadcast("joty:auth-state", state),
+  });
+  manager.initialize();
+  return manager;
 }
 
 // --- Auto-updater ---
@@ -623,13 +693,17 @@ async function createWindow() {
     }
   });
 
+  // Coming back to the window is a good moment to make sure the token is
+  // fresh (covers long idle periods where timers may have been throttled).
+  mainWindow.on("focus", () => auth?.onResume());
+  mainWindow.on("show", () => auth?.onResume());
+
   if (isDev) {
-    mainWindow.loadURL(DEV_URL);
-    mainWindow.webContents.openDevTools();
+    mainWindow.loadURL(`${DEV_URL}/notes`);
+    if (!app.isPackaged) mainWindow.webContents.openDevTools();
   } else {
-    const rendererPath = path.join(app.getAppPath(), "dist", "renderer");
-    await startStaticServer(rendererPath);
-    mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+    registerAppProtocol(path.join(app.getAppPath(), "dist", "renderer"));
+    mainWindow.loadURL(`${APP_ORIGIN}/notes`);
   }
 
   configureAutoUpdater();
@@ -638,6 +712,15 @@ async function createWindow() {
 // --- IPC ---
 
 function registerIpc() {
+  ipcMain.handle("joty:auth-get-state", () => auth.getState());
+  ipcMain.handle("joty:auth-get-access-token", () => auth.getAccessToken());
+  ipcMain.handle("joty:auth-sign-in", (_event, returnTo) => auth.signIn(returnTo));
+  ipcMain.handle("joty:auth-sign-out", async () => {
+    await auth.signOut();
+    // Land on the landing page rather than a protected route.
+    mainWindow?.loadURL(`${appBaseUrl()}/`);
+  });
+
   ipcMain.handle("joty:get-app-update-state", async () => appUpdateState);
   ipcMain.handle("joty:check-for-app-updates", () => checkForAppUpdates());
   ipcMain.handle("joty:download-app-update", async () => {
@@ -720,6 +803,7 @@ if (!gotLock) {
       app.setAsDefaultProtocolClient(PROTOCOL);
     }
 
+    auth = createAuthManager();
     Menu.setApplicationMenu(buildApplicationMenu());
     registerIpc();
     createTray();
@@ -740,13 +824,13 @@ if (!gotLock) {
 
   app.on("will-quit", () => {
     globalShortcut.unregisterAll();
+    auth?.cancelPendingSignIn();
   });
 
   app.on("window-all-closed", () => {
     // With minimize-to-tray the main window can be hidden, not closed; only
     // quit when the user really asked to (tray → Quit, or non-tray platforms).
     if (isQuitting || !settings.minimizeToTray) {
-      if (server) server.close();
       app.quit();
     }
   });

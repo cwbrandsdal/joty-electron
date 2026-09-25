@@ -20,7 +20,8 @@ export default defineConfig({
       "react-dom",
       "react-router",
       "@tanstack/react-query",
-      "@workos-inc/authkit-react",
+      "@tanstack/react-query-persist-client",
+      "idb-keyval",
     ],
   },
   build: {

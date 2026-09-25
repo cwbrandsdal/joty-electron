@@ -58,5 +58,4 @@ jobs:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           VITE_WORKOS_CLIENT_ID: ${{ vars.VITE_WORKOS_CLIENT_ID }}
-          VITE_WORKOS_REDIRECT_URI: http://127.0.0.1:39179/auth/callback
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}

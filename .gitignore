@@ -7,3 +7,4 @@ release/
 .env.development
 .env.production
 .env.*.local
+electron/desktop-config.json

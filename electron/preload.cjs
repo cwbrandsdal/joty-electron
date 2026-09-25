@@ -1,29 +1,32 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+function subscribe(channel, callback) {
+  const listener = (_event, payload) => callback(payload);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.removeListener(channel, listener);
+}
+
 contextBridge.exposeInMainWorld("joty", {
+  // --- Authentication (owned by the main process; see electron/auth.cjs) ---
+  auth: {
+    getState: () => ipcRenderer.invoke("joty:auth-get-state"),
+    getAccessToken: () => ipcRenderer.invoke("joty:auth-get-access-token"),
+    signIn: (returnTo) => ipcRenderer.invoke("joty:auth-sign-in", returnTo),
+    signOut: () => ipcRenderer.invoke("joty:auth-sign-out"),
+    onState: (callback) => subscribe("joty:auth-state", callback),
+  },
+
   // --- Auto-update ---
   getAppUpdateState: () => ipcRenderer.invoke("joty:get-app-update-state"),
   checkForAppUpdates: () => ipcRenderer.invoke("joty:check-for-app-updates"),
   downloadAppUpdate: () => ipcRenderer.invoke("joty:download-app-update"),
   installAppUpdate: () => ipcRenderer.invoke("joty:install-app-update"),
-  onAppUpdateState: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on("joty:app-update-state", listener);
-    return () => ipcRenderer.removeListener("joty:app-update-state", listener);
-  },
+  onAppUpdateState: (callback) => subscribe("joty:app-update-state", callback),
 
   // --- Native menu / deep-link actions forwarded to the renderer ---
-  onMenuAction: (callback) => {
-    const listener = (_event, action) => callback(action);
-    ipcRenderer.on("joty:menu-action", listener);
-    return () => ipcRenderer.removeListener("joty:menu-action", listener);
-  },
+  onMenuAction: (callback) => subscribe("joty:menu-action", callback),
   /** Deep link: main asks the renderer to open a specific note id. */
-  onOpenNote: (callback) => {
-    const listener = (_event, noteId) => callback(noteId);
-    ipcRenderer.on("joty:open-note", listener);
-    return () => ipcRenderer.removeListener("joty:open-note", listener);
-  },
+  onOpenNote: (callback) => subscribe("joty:open-note", callback),
 
   // --- Desktop settings ---
   getSettings: () => ipcRenderer.invoke("joty:get-settings"),

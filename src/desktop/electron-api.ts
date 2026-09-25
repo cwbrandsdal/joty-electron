@@ -39,7 +39,39 @@ export interface PdfExportResult {
   error?: string;
 }
 
+export interface DesktopAuthUser {
+  id: string;
+  email: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  profilePictureUrl?: string | null;
+}
+
+export interface DesktopAuthState {
+  status: "signed-in" | "signed-out";
+  user: DesktopAuthUser | null;
+  /** Why the last sign-in failed or the session ended; null when fine. */
+  error: string | null;
+}
+
+export interface DesktopAccessToken {
+  /** Null when signed out or (with `transient`) temporarily unavailable. */
+  token: string | null;
+  /** The session is intact but WorkOS could not be reached to refresh. */
+  transient?: boolean;
+}
+
+export interface DesktopAuthApi {
+  getState: () => Promise<DesktopAuthState>;
+  getAccessToken: () => Promise<DesktopAccessToken>;
+  signIn: (returnTo?: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  onState: (callback: (state: DesktopAuthState) => void) => () => void;
+}
+
 export interface JotyApi {
+  /** Main-process authentication bridge (absent in shells older than 1.4). */
+  auth?: DesktopAuthApi;
   getAppUpdateState: () => Promise<AppUpdateState>;
   checkForAppUpdates: () => Promise<AppUpdateState>;
   downloadAppUpdate: () => Promise<AppUpdateState>;
