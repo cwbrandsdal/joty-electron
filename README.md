@@ -109,8 +109,9 @@ answers, and quick capture works offline.
 Editor shortcuts (inside the note body): `Ctrl+B` bold · `Ctrl+I` italic · `` Ctrl+` `` inline code ·
 `Ctrl+Shift+K` link · `Ctrl+1/2/3` heading level, `Ctrl+0` clear · `Ctrl+Shift+X` toggle task ·
 `Ctrl+Shift+L` toggle bullet · typing `*`, `_`, `` ` `` or `~` with a selection wraps it · Enter
-continues lists. Tabs: drag to reorder, right-click to pin, middle-click to close, `Alt+←/→`
-moves the focused tab. Editor font, size, line width, typewriter and focus modes live in
+continues lists. Tabs: a single click opens a note in a reusable preview tab (italic) so browsing
+doesn't pile up tabs — edit, double-click, pin, or "Keep open" makes it permanent; drag to reorder,
+right-click to pin, middle-click to close, `Alt+←/→` moves the focused tab. Editor font, size, line width, typewriter and focus modes live in
 Settings → Editor.
 
 The menu bar is hidden by default — press `Alt` to reveal it. Accelerators work while it is hidden.
