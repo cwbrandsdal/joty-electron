@@ -103,7 +103,15 @@ answers, and quick capture works offline.
 | `Ctrl+Shift+E`                | Export current note as PDF           |
 | `Ctrl+Shift+J`                | Quick capture (global, configurable) |
 | `Ctrl+,`                      | Settings                             |
-| `Ctrl+F` or `/`               | Focus sidebar search                 |
+| `Ctrl+Shift+F` or `/`         | Focus sidebar search (all notes)     |
+| `Ctrl+F`                      | Find in the current note (editor)    |
+
+Editor shortcuts (inside the note body): `Ctrl+B` bold · `Ctrl+I` italic · `` Ctrl+` `` inline code ·
+`Ctrl+Shift+K` link · `Ctrl+1/2/3` heading level, `Ctrl+0` clear · `Ctrl+Shift+X` toggle task ·
+`Ctrl+Shift+L` toggle bullet · typing `*`, `_`, `` ` `` or `~` with a selection wraps it · Enter
+continues lists. Tabs: drag to reorder, right-click to pin, middle-click to close, `Alt+←/→`
+moves the focused tab. Editor font, size, line width, typewriter and focus modes live in
+Settings → Editor.
 
 The menu bar is hidden by default — press `Alt` to reveal it. Accelerators work while it is hidden.
 
