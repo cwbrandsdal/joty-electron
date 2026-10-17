@@ -19,6 +19,8 @@ const { loadSettings, saveSettings, loadWindowState, saveWindowState } = require
 const { loadDesktopConfig } = require("./desktop-config.cjs");
 const { AuthManager } = require("./auth.cjs");
 const log = require("./log.cjs");
+const { createLocalFileWindows } = require("./local-file-windows.cjs");
+const { fileArguments } = require("./local-files.cjs");
 
 // Loopback port registered with WorkOS as the desktop redirect URI. It is
 // only listened on while a sign-in is in progress (see auth.cjs).
@@ -73,6 +75,8 @@ let captureWindow = null;
 let tray = null;
 let updaterConfigured = false;
 let isQuitting = false;
+let localFiles = null;
+const pendingFiles = [];
 let settings = { ...require("./store.cjs").DEFAULT_SETTINGS };
 let appUpdateState = {
   phase: "unsupported",
@@ -98,7 +102,8 @@ const SELF_ORIGINS = new Set(isDev ? [DEV_URL, APP_ORIGIN] : [APP_ORIGIN]);
 
 function isSelfUrl(url) {
   try {
-    return SELF_ORIGINS.has(new URL(url).origin);
+    const parsed = new URL(url);
+    return SELF_ORIGINS.has(`${parsed.protocol}//${parsed.host}`);
   } catch {
     return false;
   }
@@ -377,12 +382,13 @@ function registerCaptureShortcut() {
 // --- Renderer messaging ---
 
 function sendMenuAction(action) {
-  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
-  mainWindow.webContents.send("joty:menu-action", action);
+  const target = BrowserWindow.getFocusedWindow() ?? mainWindow;
+  if (!target || target.isDestroyed() || target.webContents.isDestroyed()) return;
+  target.webContents.send("joty:menu-action", action);
 }
 
 function focusMainWindow() {
-  if (!mainWindow) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
     return;
   }
@@ -459,6 +465,9 @@ function buildApplicationMenu() {
     {
       label: "File",
       submenu: [
+        { label: "Open File…", accelerator: "CmdOrCtrl+O", click: () => localFiles?.pick() },
+        { label: "Save File", accelerator: "CmdOrCtrl+S", click: () => localFiles?.saveFocused() },
+        { type: "separator" },
         { label: "New Note", accelerator: "CmdOrCtrl+N", click: () => sendMenuAction("new-note") },
         {
           label: "Quick Capture",
@@ -515,7 +524,9 @@ function buildApplicationMenu() {
         {
           label: "Close Tab",
           accelerator: "CmdOrCtrl+W",
-          click: () => sendMenuAction("close-tab"),
+          click: () => {
+            if (!localFiles?.closeFocused()) sendMenuAction("close-tab");
+          },
         },
         { label: "Next Tab", accelerator: "Control+Tab", click: () => sendMenuAction("next-tab") },
         {
@@ -672,7 +683,6 @@ function createTray() {
       {
         label: "Quit Joty",
         click: () => {
-          isQuitting = true;
           app.quit();
         },
       },
@@ -836,6 +846,7 @@ function registerIpc() {
   });
   ipcMain.handle("joty:install-app-update", async () => {
     if (appUpdateState.phase !== "downloaded") return;
+    if (!localFiles?.confirmQuit()) return;
     isQuitting = true;
     setImmediate(() => autoUpdater.quitAndInstall());
   });
@@ -880,8 +891,11 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on("second-instance", (_event, argv) => {
+  app.on("second-instance", (_event, argv, workingDirectory) => {
     focusMainWindow();
+    const files = fileArguments(argv, workingDirectory, process.defaultApp);
+    if (localFiles) files.forEach(localFiles.open);
+    else pendingFiles.push(...files);
     // A deep link launched the second instance (Windows passes it in argv).
     const deepLink = argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
     if (deepLink) handleDeepLink(deepLink);
@@ -891,6 +905,12 @@ if (!gotLock) {
   app.on("open-url", (event, url) => {
     event.preventDefault();
     handleDeepLink(url);
+  });
+
+  app.on("open-file", (event, filePath) => {
+    event.preventDefault();
+    if (localFiles) localFiles.open(filePath);
+    else pendingFiles.push(filePath);
   });
 
   process.on("uncaughtException", (error) => log.error("[main] uncaught exception", error));
@@ -923,13 +943,33 @@ if (!gotLock) {
 
     return createWindow().then(() => {
       applySettings();
+      localFiles = createLocalFileWindows({
+        baseUrl: appBaseUrl,
+        isTrusted: isSelfUrl,
+        focusMain: focusMainWindow,
+        openNote: (id) => {
+          const needsWindow = !mainWindow || mainWindow.isDestroyed();
+          focusMainWindow();
+          if (needsWindow) void mainWindow.loadURL(`${appBaseUrl()}/notes/${id}`);
+          else mainWindow.webContents.send("joty:open-note", id);
+        },
+        attachContextMenu,
+      });
+      [
+        ...fileArguments(process.argv, process.cwd(), process.defaultApp),
+        ...pendingFiles.splice(0),
+      ].forEach(localFiles.open);
       // A deep link may have launched the very first instance (Windows).
       const deepLink = process.argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
       if (deepLink) handleDeepLink(deepLink);
     });
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
+    if (!isQuitting && localFiles && !localFiles.confirmQuit()) {
+      event.preventDefault();
+      return;
+    }
     isQuitting = true;
     log.info("quitting");
     persistWindowState();

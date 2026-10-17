@@ -1,6 +1,6 @@
 {
   "name": "joty-electron",
-  "version": "1.11.2",
+  "version": "1.12.0",
   "description": "Joty — Notes that keep up (Desktop)",
   "main": "electron/main.cjs",
   "type": "module",
@@ -15,7 +15,8 @@
     "lint": "node scripts/check-shared-deps.mjs && eslint .",
     "format": "prettier --write .",
     "prepare": "husky",
-    "test": "node --test electron/*.test.cjs"
+    "test": "node --test electron/*.test.cjs",
+    "test:local-files": "node --experimental-strip-types scripts/test-local-files.mjs"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
@@ -69,6 +70,24 @@
   "build": {
     "appId": "io.joty.desktop",
     "productName": "Joty",
+    "fileAssociations": [
+      {
+        "ext": [
+          "txt",
+          "log"
+        ],
+        "name": "Text document",
+        "role": "Editor"
+      },
+      {
+        "ext": [
+          "md",
+          "markdown"
+        ],
+        "name": "Markdown document",
+        "role": "Editor"
+      }
+    ],
     "directories": {
       "output": "release"
     },

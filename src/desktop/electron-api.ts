@@ -76,6 +76,18 @@ export interface DiagnosticsResult {
 }
 
 export interface JotyApi {
+  files?: {
+    open: () => Promise<void>;
+    get: () => Promise<LocalFileDocument>;
+    updateDraft: (body: string) => void;
+    save: () => Promise<{ ok: boolean; error?: string }>;
+    reload: () => Promise<LocalFileDocument | null>;
+    openNote: (id: string) => Promise<void>;
+    showJoty: () => Promise<void>;
+    onState: (callback: (document: LocalFileDocument) => void) => () => void;
+    onSaveRequest: (callback: () => void) => () => void;
+    onError: (callback: (error: string) => void) => () => void;
+  };
   /** Main-process authentication bridge (absent in shells older than 1.4). */
   auth?: DesktopAuthApi;
   /** Append to the main-process log (absent in shells older than 1.5). */
@@ -94,6 +106,13 @@ export interface JotyApi {
   printNoteToPdf: () => Promise<PdfExportResult>;
   isQuickCapture: () => Promise<boolean>;
   closeQuickCapture: () => Promise<void>;
+}
+
+export interface LocalFileDocument {
+  path: string;
+  name: string;
+  body: string;
+  savedBody: string;
 }
 
 declare global {

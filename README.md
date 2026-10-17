@@ -96,6 +96,8 @@ answers, and quick capture works offline.
 | ----------------------------- | ---------------------------------------------- |
 | `Ctrl+K`                      | Quick open (command palette)                   |
 | `Ctrl+N`                      | New note                                       |
+| `Ctrl+O`                      | Open a file from your computer                 |
+| `Ctrl+S`                      | Save the local file to its original path       |
 | `Ctrl+W`                      | Close tab                                      |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab                            |
 | `Ctrl+P`                      | Pin/unpin current note                         |
@@ -115,6 +117,42 @@ right-click to pin, middle-click to close, `Alt+←/→` moves the focused tab. 
 Settings → Editor.
 
 The menu bar is hidden by default — press `Alt` to reveal it. Accelerators work while it is hidden.
+
+## Files From Your Computer
+
+Use **Open file** in the toolbar or command palette, or **File → Open File… / Ctrl+O**.
+Text and Markdown files open in separate windows labeled **Local file · Not saved in Joty**,
+with the full path and an unsaved indicator. Local editing works without an account or network.
+**Save file / Ctrl+S** writes to the original path; local files do not autosave or enter Joty's
+notes cache, sync queue, or AI features. Closing, reloading or quitting with edits prompts first.
+
+The Windows installer registers Joty as an **Open with** choice for `.txt`, `.log`, `.md`, and
+`.markdown`. Choose Joty in Windows **Open with → Choose another app**; select **Always** if you
+want it as the default. Opening a file again focuses its existing window. Command-line file
+paths are supported both at startup and while Joty is running.
+
+**Copy into Joty** creates a normal note from the current text, including unsaved edits, using
+the filename as its title. It requires sign-in and an online connection. The original file stays
+on disk; subsequent changes to either copy are independent. **Open Joty copy** opens the note.
+
+Supported files are UTF-8 or BOM-marked UTF-16 text up to 5 MB. Saves preserve the encoding/BOM
+and predominant line ending (mixed endings are normalized when edited). Binary/legacy-encoded
+files are rejected. Joty notes have a separate limit of 1,000,000 characters. If another program
+changes the file, saving refuses to overwrite it: preserve your draft with **Copy into Joty** or
+copy/paste, then **Reload** the disk version. Unsaved local drafts live in memory and are not
+recovered after a crash.
+
+Implementation: `electron/local-files.cjs` handles encoding and atomic file replacement;
+`electron/local-file-windows.cjs` owns each path and draft in the main process. File IPC is
+restricted to trusted top-level app frames, and read/save/reload are bound to the owning window.
+The renderer cannot supply arbitrary paths to read or write.
+
+Verification: run `npm test` for disk round-trip and failure cases. After `npm run build`, run
+`npm run test:local-files` with Node 22.18+ and the sibling joty-web dependencies installed. This
+launches the real Electron shell with an isolated temporary profile, fake authentication/API,
+and controlled dialog responses; it checks disk saving, copying, conflicts, IPC ownership and
+close/quit protection. It never uses the signed-in profile or real notes. The output includes a
+temporary screenshot path. Windows Explorer association selection is a manual installed-build check.
 
 ## Desktop Features
 

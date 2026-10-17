@@ -7,6 +7,18 @@ function subscribe(channel, callback) {
 }
 
 contextBridge.exposeInMainWorld("joty", {
+  files: {
+    open: () => ipcRenderer.invoke("joty:files-open"),
+    get: () => ipcRenderer.invoke("joty:file-get"),
+    updateDraft: (body) => ipcRenderer.send("joty:file-draft", body),
+    save: () => ipcRenderer.invoke("joty:file-save"),
+    reload: () => ipcRenderer.invoke("joty:file-reload"),
+    openNote: (id) => ipcRenderer.invoke("joty:file-open-note", id),
+    showJoty: () => ipcRenderer.invoke("joty:file-show-joty"),
+    onState: (callback) => subscribe("joty:file-state", callback),
+    onSaveRequest: (callback) => subscribe("joty:file-save-request", callback),
+    onError: (callback) => subscribe("joty:file-error", callback),
+  },
   // --- Authentication (owned by the main process; see electron/auth.cjs) ---
   auth: {
     getState: () => ipcRenderer.invoke("joty:auth-get-state"),
