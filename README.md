@@ -124,6 +124,10 @@ Use **Open file** in the toolbar or command palette, or **File → Open File… 
 Text and Markdown files open alongside notes in the existing tab strip. Local-file tabs have a
 subtle blue tint, a file icon, the full path on hover, and a dot for unsaved changes. The editor
 is labeled **Local file · Not saved in Joty**. Local editing works without an account or network.
+The same **Auto / Split / Editor** preview controls used for notes are available for files
+(`Ctrl+E` cycles modes). Auto previews `.md`/`.markdown` files and detects Markdown in other
+text files. The live preview supports a resizable divider and task checkboxes; checking a task
+edits the local draft and still requires Ctrl+S to save it to disk.
 **Save file / Ctrl+S** writes to the original path; local files do not autosave or enter Joty's
 notes cache, sync queue, or AI features. Drafts and undo history survive tab switching. Closing,
 reloading or quitting with edits prompts first, including files in background tabs. Canceling a

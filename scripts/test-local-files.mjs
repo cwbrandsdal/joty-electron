@@ -65,6 +65,54 @@ try {
   await expect(main.getByRole("button", { name: "Sign in to copy into Joty" })).toBeVisible();
   expect(app.windows()).toHaveLength(1);
   const id = await main.evaluate(() => window.joty.files.list().then((list) => list.openedId));
+  console.log("Testing local Markdown preview and shared view controls.");
+  const preview = main.getByRole("region", { name: "Markdown preview", exact: true });
+  await expect(preview.getByRole("heading", { name: "Local file" })).toBeVisible();
+  await main.getByRole("radio", { name: "Editor", exact: true }).click();
+  await expect(preview).toHaveCount(0);
+  await menu("View", "Toggle Edit/Preview"); // Editor -> Auto, including signed-out mode.
+  await expect(main.getByRole("radio", { name: "Auto", exact: true })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await expect(preview).toBeVisible();
+  const previewFile = path.join(temporary, "preview.txt");
+  await writeFile(previewFile, "Plain text\n");
+  await open([previewFile]);
+  await expect(editor).toContainText("Plain text");
+  await expect(preview).toHaveCount(0);
+  await main.getByRole("radio", { name: "Split", exact: true }).click();
+  await expect(preview).toContainText("Plain text");
+  await main.getByRole("radio", { name: "Auto", exact: true }).click();
+  await expect(preview).toHaveCount(0);
+  await editor.press("Control+End");
+  await main.keyboard.type("# Preview test\n**Bold text**\n- [ ] Finish task\n");
+  await expect(preview.getByRole("heading", { name: "Preview test" })).toBeVisible();
+  await expect(preview.locator("strong")).toHaveText("Bold text");
+  await preview.getByRole("checkbox").check();
+  await expect(editor).toContainText("- [x] Finish task");
+  expect(await readFile(previewFile, "utf8")).toBe("Plain text\n");
+  await menu("File", "Save File");
+  await expect.poll(() => readFile(previewFile, "utf8")).toContain("- [x] Finish task");
+  const divider = main.getByRole("separator", { name: "Resize preview" });
+  const box = await divider.boundingBox();
+  await main.mouse.move(box.x + box.width / 2, box.y + 30);
+  await main.mouse.down();
+  await main.mouse.move(box.x + 80, box.y + 30);
+  await main.mouse.up();
+  await expect
+    .poll(() =>
+      main.evaluate(() => JSON.parse(localStorage.getItem("joty-editor-prefs")).splitRatio),
+    )
+    .toBeGreaterThan(0.5);
+  await divider.dblclick();
+  await expect
+    .poll(() =>
+      main.evaluate(() => JSON.parse(localStorage.getItem("joty-editor-prefs")).splitRatio),
+    )
+    .toBe(0.5);
+  await menu("Tabs", "Close Tab");
+  await expect(fileTab(file)).toHaveAttribute("aria-selected", "true");
   console.log("Testing signed-out tabs, rapid typing and explicit saving.");
   await editor.press("Control+End");
   const extra = "Rapid typing stays local. ".repeat(30);
@@ -155,6 +203,16 @@ try {
       });
   });
   await expect(main.getByRole("button", { name: "Copy into Joty", exact: true })).toBeVisible();
+  await expect(preview).toBeVisible();
+  await menu("View", "Toggle Edit/Preview");
+  await expect(main.getByRole("radio", { name: "Split", exact: true })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await menu("View", "Toggle Edit/Preview");
+  await expect(preview).toHaveCount(0);
+  await main.getByRole("radio", { name: "Auto", exact: true }).click();
+  await expect(preview).toBeVisible();
   const beforeCopy = await readFile(file, "utf8");
   let lostCreate;
   await main.route(
@@ -249,6 +307,22 @@ try {
       pageErrors: errors,
     }),
   );
+} catch (error) {
+  const page = app.windows()[0];
+  console.error(
+    "Smoke failure state",
+    await page
+      ?.evaluate(async () => {
+        const list = await window.joty.files.list();
+        return {
+          list,
+          files: await Promise.all(list.files.map((file) => window.joty.files.get(file.id))),
+        };
+      })
+      .catch(() => null),
+  );
+  console.error("Dialogs", await app.evaluate(() => globalThis.testDialogs).catch(() => null));
+  throw error;
 } finally {
   await app
     .evaluate(() => {

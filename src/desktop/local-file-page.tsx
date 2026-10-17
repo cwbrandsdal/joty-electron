@@ -1,4 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useDeferredValue, useMemo, lazy, Suspense } from "react";
+import type { PreviewMode } from "@/components/notes/preview-controls";
+import { looksLikeMarkdown } from "@/lib/markdown-detect";
+import { usePreviewSplit } from "@/hooks/use-preview-split";
+import { toggleTaskAtLine } from "@/components/notes/editor/markdown-commands";
+import { cn } from "@/lib/cn";
 import { FileText, FolderOpen, Save, Upload, RotateCcw } from "lucide-react";
 import { CodeMirrorEditor } from "@/components/notes/editor/CodeMirrorEditor";
 import { Button } from "@/components/ui/button";
@@ -11,12 +16,17 @@ import { useQueryClient } from "@tanstack/react-query";
 import { insertNoteIntoListCaches } from "@/hooks/use-notes";
 
 const noLinks = () => [];
+const MarkdownPreview = lazy(() =>
+  import("@/components/notes/markdown-preview").then((m) => ({ default: m.MarkdownPreview })),
+);
 
 export function LocalFilePage({
   id,
+  previewMode,
   onOpenNote,
 }: {
   id: string;
+  previewMode: PreviewMode;
   onOpenNote: (id: string, title: string) => void;
 }) {
   const [prefs] = useEditorPrefs();
@@ -31,6 +41,18 @@ export function LocalFilePage({
   const [copyNote, setCopyNote] = useState(() => fileCopies.get(id)?.note);
   const copying = useRef(false);
   const bridge = window.joty?.files;
+  const deferredBody = useDeferredValue(body);
+  const isMarkdown = useMemo(
+    () => /\.(md|markdown)$/i.test(document?.name ?? "") || looksLikeMarkdown(deferredBody),
+    [document?.name, deferredBody],
+  );
+  const showPreview = previewMode === "on" || (previewMode === "auto" && isMarkdown);
+  const { splitRef, dragRatio, ratio, startSplitDrag, resetSplit } = usePreviewSplit();
+
+  function changeBody(value: string) {
+    bridge?.updateDraft(id, value);
+    setBody(value);
+  }
 
   useEffect(() => {
     if (!bridge) return;
@@ -203,25 +225,70 @@ export function LocalFilePage({
           </p>
         )}
       </header>
-      <section
-        className="flex-1 min-h-0 overflow-auto p-3"
-        aria-label="Local file editor"
-        inert={reloading}
-      >
-        {document && (
-          <CodeMirrorEditor
-            value={body}
-            onChange={(value) => {
-              bridge?.updateDraft(id, value);
-              setBody(value);
-            }}
-            getLinkTargets={noLinks}
-            prefs={prefs}
-            stateKey={id}
-            autoFocus
-          />
+      <div ref={splitRef} className="flex-1 min-h-0 flex p-3" inert={reloading}>
+        <section
+          className={cn("h-full min-w-0", !showPreview && "flex-1")}
+          style={
+            showPreview ? { flex: `0 0 ${ratio * 100}%`, maxWidth: `${ratio * 100}%` } : undefined
+          }
+          aria-label="Local file editor"
+        >
+          {document && (
+            <CodeMirrorEditor
+              value={body}
+              onChange={changeBody}
+              getLinkTargets={noLinks}
+              prefs={prefs}
+              stateKey={id}
+              autoFocus
+            />
+          )}
+        </section>
+        {showPreview && document && (
+          <>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize preview"
+              title="Drag to resize · double-click to reset"
+              onPointerDown={startSplitDrag}
+              onDoubleClick={resetSplit}
+              className="group flex w-3 shrink-0 cursor-col-resize items-stretch justify-center select-none"
+            >
+              <div
+                className={cn(
+                  "w-px transition-colors",
+                  dragRatio !== null ? "bg-accent" : "bg-border group-hover:bg-accent",
+                )}
+              />
+            </div>
+            <section
+              aria-label="Markdown preview"
+              className="joty-preview-pane flex-1 min-w-0 overflow-y-auto pb-4 pl-3"
+            >
+              <div className="prose-joty">
+                {deferredBody ? (
+                  <Suspense fallback={<p className="text-ink-muted">Loading preview…</p>}>
+                    <MarkdownPreview
+                      body={deferredBody}
+                      onToggleTaskAtLine={
+                        deferredBody === body
+                          ? (line) => {
+                              const next = toggleTaskAtLine(body, line);
+                              if (next !== null) changeBody(next);
+                            }
+                          : undefined
+                      }
+                    />
+                  </Suspense>
+                ) : (
+                  <p className="text-ink-muted italic">Nothing to preview</p>
+                )}
+              </div>
+            </section>
+          </>
         )}
-      </section>
+      </div>
       <footer
         className="shrink-0 border-t border-border px-5 py-2 text-xs text-ink-muted"
         role="status"
