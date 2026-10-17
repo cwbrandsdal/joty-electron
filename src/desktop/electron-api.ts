@@ -1,4 +1,4 @@
-import type { MenuAction } from "@/platform/platform";
+import type { MenuAction, LocalFilesSnapshot } from "@/platform/platform";
 
 export type AppUpdatePhase =
   | "idle"
@@ -78,15 +78,14 @@ export interface DiagnosticsResult {
 export interface JotyApi {
   files?: {
     open: () => Promise<void>;
-    get: () => Promise<LocalFileDocument>;
-    updateDraft: (body: string) => void;
-    save: () => Promise<{ ok: boolean; error?: string }>;
-    reload: () => Promise<LocalFileDocument | null>;
-    openNote: (id: string) => Promise<void>;
-    showJoty: () => Promise<void>;
+    list: () => Promise<LocalFilesSnapshot>;
+    get: (id: string) => Promise<LocalFileDocument>;
+    updateDraft: (id: string, body: string) => void;
+    save: (id: string) => Promise<{ ok: boolean; error?: string }>;
+    reload: (id: string) => Promise<LocalFileDocument | null>;
+    close: (ids: string[]) => Promise<boolean>;
+    onList: (callback: (snapshot: LocalFilesSnapshot) => void) => () => void;
     onState: (callback: (document: LocalFileDocument) => void) => () => void;
-    onSaveRequest: (callback: () => void) => () => void;
-    onError: (callback: (error: string) => void) => () => void;
   };
   /** Main-process authentication bridge (absent in shells older than 1.4). */
   auth?: DesktopAuthApi;
@@ -109,10 +108,12 @@ export interface JotyApi {
 }
 
 export interface LocalFileDocument {
+  id: string;
   path: string;
   name: string;
   body: string;
   savedBody: string;
+  error: string | null;
 }
 
 declare global {

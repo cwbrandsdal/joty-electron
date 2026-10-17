@@ -121,14 +121,17 @@ The menu bar is hidden by default — press `Alt` to reveal it. Accelerators wor
 ## Files From Your Computer
 
 Use **Open file** in the toolbar or command palette, or **File → Open File… / Ctrl+O**.
-Text and Markdown files open in separate windows labeled **Local file · Not saved in Joty**,
-with the full path and an unsaved indicator. Local editing works without an account or network.
+Text and Markdown files open alongside notes in the existing tab strip. Local-file tabs have a
+subtle blue tint, a file icon, the full path on hover, and a dot for unsaved changes. The editor
+is labeled **Local file · Not saved in Joty**. Local editing works without an account or network.
 **Save file / Ctrl+S** writes to the original path; local files do not autosave or enter Joty's
-notes cache, sync queue, or AI features. Closing, reloading or quitting with edits prompts first.
+notes cache, sync queue, or AI features. Drafts and undo history survive tab switching. Closing,
+reloading or quitting with edits prompts first, including files in background tabs. Canceling a
+bulk close retains all selected tabs; any files already saved during those prompts stay saved.
 
 The Windows installer registers Joty as an **Open with** choice for `.txt`, `.log`, `.md`, and
 `.markdown`. Choose Joty in Windows **Open with → Choose another app**; select **Always** if you
-want it as the default. Opening a file again focuses its existing window. Command-line file
+want it as the default. Opening a file again focuses its existing tab. Command-line file
 paths are supported both at startup and while Joty is running.
 
 **Copy into Joty** creates a normal note from the current text, including unsaved edits, using
@@ -143,15 +146,16 @@ copy/paste, then **Reload** the disk version. Unsaved local drafts live in memor
 recovered after a crash.
 
 Implementation: `electron/local-files.cjs` handles encoding and atomic file replacement;
-`electron/local-file-windows.cjs` owns each path and draft in the main process. File IPC is
-restricted to trusted top-level app frames, and read/save/reload are bound to the owning window.
-The renderer cannot supply arbitrary paths to read or write.
+`electron/local-file-sessions.cjs` owns each path and draft in the main process. File IPC is
+restricted to the main window's trusted top-level app frame and main-issued session IDs.
+The renderer cannot supply arbitrary paths to read or write. Local file paths and tabs are not
+persisted with cloud-note tabs; reopen files after restarting the app.
 
 Verification: run `npm test` for disk round-trip and failure cases. After `npm run build`, run
 `npm run test:local-files` with Node 22.18+ and the sibling joty-web dependencies installed. This
 launches the real Electron shell with an isolated temporary profile, fake authentication/API,
-and controlled dialog responses; it checks disk saving, copying, conflicts, IPC ownership and
-close/quit protection. It never uses the signed-in profile or real notes. The output includes a
+and controlled dialog responses; it checks mixed tabs, draft/undo retention, disk saving,
+copying, conflicts, IPC authorization and bulk-close/quit protection. It never uses the signed-in profile or real notes. The output includes a
 temporary screenshot path. Windows Explorer association selection is a manual installed-build check.
 
 ## Desktop Features

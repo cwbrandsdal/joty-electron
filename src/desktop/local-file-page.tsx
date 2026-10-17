@@ -3,59 +3,55 @@ import { FileText, FolderOpen, Save, Upload, RotateCcw } from "lucide-react";
 import { CodeMirrorEditor } from "@/components/notes/editor/CodeMirrorEditor";
 import { Button } from "@/components/ui/button";
 import { useEditorPrefs } from "@/hooks/use-editor-prefs";
-import { useTheme } from "@/hooks/use-theme";
 import { useJotyAuth } from "@/auth/joty-auth";
 import { api } from "@/api/client";
 import type { LocalFileDocument } from "./electron-api";
+import { fileCopies } from "./local-file-store";
+import { useQueryClient } from "@tanstack/react-query";
+import { insertNoteIntoListCaches } from "@/hooks/use-notes";
 
 const noLinks = () => [];
 
-export function LocalFilePage() {
-  useTheme();
+export function LocalFilePage({
+  id,
+  onOpenNote,
+}: {
+  id: string;
+  onOpenNote: (id: string, title: string) => void;
+}) {
   const [prefs] = useEditorPrefs();
-  const { user } = useJotyAuth();
+  const { user, signIn } = useJotyAuth();
+  const queryClient = useQueryClient();
   const [document, setDocument] = useState<LocalFileDocument | null>(null);
   const [body, setBody] = useState("");
   const [savedBody, setSavedBody] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reloading, setReloading] = useState(false);
-  const [copyId, setCopyId] = useState<string | null>(null);
-  const dirty = useRef(false);
+  const [copyNote, setCopyNote] = useState(() => fileCopies.get(id)?.note);
   const copying = useRef(false);
-  const promotion = useRef<{ id: string; title: string; body: string } | null>(null);
   const bridge = window.joty?.files;
 
   useEffect(() => {
     if (!bridge) return;
     let active = true;
     void bridge
-      .get()
+      .get(id)
       .then((doc) => {
         if (!active) return;
         setDocument(doc);
         setBody(doc.body);
         setSavedBody(doc.savedBody);
-        dirty.current = doc.body !== doc.savedBody;
+        setError(doc.error);
       })
       .catch((e: Error) => {
         if (active) setError(e.message);
       });
     const unsubscribeState = bridge.onState((doc) => {
+      if (doc.id !== id) return;
       setSavedBody(doc.savedBody);
-      setError(null);
+      setError(doc.error);
     });
-    const unsubscribeError = bridge.onError(setError);
-    const unsubscribeSave = bridge.onSaveRequest(() => {
-      void bridge.save().catch((e: Error) => setError(e.message));
-    });
-    const beforeUnload = (event: BeforeUnloadEvent) => {
-      if (dirty.current) {
-        event.preventDefault();
-        event.returnValue = "";
-      }
-    };
-    window.addEventListener("beforeunload", beforeUnload);
     const keydown = (event: KeyboardEvent) => {
       if (
         (event.ctrlKey || event.metaKey) &&
@@ -64,27 +60,20 @@ export function LocalFilePage() {
         event.key.toLowerCase() === "s"
       ) {
         event.preventDefault();
-        void bridge.save().catch((e: Error) => setError(e.message));
+        void bridge.save(id).catch((e: Error) => setError(e.message));
       }
     };
     window.addEventListener("keydown", keydown);
     return () => {
       active = false;
       unsubscribeState();
-      unsubscribeError();
-      unsubscribeSave();
-      window.removeEventListener("beforeunload", beforeUnload);
       window.removeEventListener("keydown", keydown);
     };
-  }, [bridge]);
-
-  useEffect(() => {
-    dirty.current = body !== savedBody;
-  }, [body, savedBody]);
+  }, [bridge, id]);
 
   async function save() {
     try {
-      await bridge?.save();
+      await bridge?.save(id);
     } catch (e) {
       setError(String(e));
     }
@@ -93,12 +82,11 @@ export function LocalFilePage() {
   async function reload() {
     setReloading(true);
     try {
-      const doc = await bridge?.reload();
+      const doc = await bridge?.reload(id);
       if (doc) {
         setDocument(doc);
         setBody(doc.body);
         setSavedBody(doc.savedBody);
-        dirty.current = false;
       }
     } catch (e) {
       setError(String(e));
@@ -109,7 +97,7 @@ export function LocalFilePage() {
 
   async function copyIntoJoty() {
     if (!document || !user || copying.current) return;
-    if (!promotion.current && body.length > 1_000_000) {
+    if (!fileCopies.get(id)?.request && body.length > 1_000_000) {
       setError(
         "Joty notes support up to 1,000,000 characters. Shorten the text before copying it into Joty.",
       );
@@ -120,13 +108,19 @@ export function LocalFilePage() {
     setError(null);
     try {
       // Keep the same snapshot and id on retry if a response was lost.
-      promotion.current ??= {
+      const copy = fileCopies.get(id) ?? {};
+      copy.request ??= {
         id: crypto.randomUUID(),
         title: document.name.replace(/\.[^.]+$/, "") || document.name,
         body,
       };
-      const note = await api.createNote(promotion.current);
-      setCopyId(note.id);
+      fileCopies.set(id, copy);
+      const note = await api.createNote(copy.request);
+      copy.note = { id: note.id, title: note.title };
+      setCopyNote(copy.note);
+      queryClient.setQueryData(["note", note.id], note);
+      insertNoteIntoListCaches(queryClient, note);
+      void queryClient.invalidateQueries({ queryKey: ["notes"] });
     } catch {
       setError(
         "Couldn't copy into Joty. Check your connection and try again. Your local file is unchanged; retry will copy the same text.",
@@ -138,7 +132,7 @@ export function LocalFilePage() {
   }
 
   return (
-    <main className="h-dvh flex flex-col bg-page text-ink">
+    <main className="flex-1 min-h-0 flex flex-col bg-page text-ink">
       <header className="shrink-0 border-b border-border bg-panel px-5 py-4 space-y-3">
         <div className="flex items-center gap-2 text-sm text-ink-secondary">
           <FileText size={16} />
@@ -178,8 +172,8 @@ export function LocalFilePage() {
             Reload
           </Button>
           <div className="flex-1" />
-          {copyId ? (
-            <Button size="sm" onClick={() => void bridge?.openNote(copyId)}>
+          {copyNote ? (
+            <Button size="sm" onClick={() => onOpenNote(copyNote.id, copyNote.title)}>
               Open Joty copy
             </Button>
           ) : user ? (
@@ -193,12 +187,12 @@ export function LocalFilePage() {
               {busy ? "Copying…" : "Copy into Joty"}
             </Button>
           ) : (
-            <Button variant="ghost" size="sm" onClick={() => void bridge?.showJoty()}>
+            <Button variant="ghost" size="sm" onClick={() => void signIn()}>
               Sign in to copy into Joty
             </Button>
           )}
         </div>
-        {copyId && (
+        {copyNote && (
           <p role="status" className="text-sm text-ink-secondary">
             Copied into Joty. The Joty copy and this file are now independent.
           </p>
@@ -218,12 +212,12 @@ export function LocalFilePage() {
           <CodeMirrorEditor
             value={body}
             onChange={(value) => {
-              dirty.current = value !== savedBody;
-              bridge?.updateDraft(value);
+              bridge?.updateDraft(id, value);
               setBody(value);
             }}
             getLinkTargets={noLinks}
             prefs={prefs}
+            stateKey={id}
             autoFocus
           />
         )}

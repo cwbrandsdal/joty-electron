@@ -2,7 +2,7 @@
 /* global window */
 import { _electron, expect } from "../../joty-web/node_modules/@playwright/test/index.mjs";
 import { MockApi } from "../../joty-web/e2e/mock-api.ts";
-import { mkdtemp, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,10 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const temporary = await mkdtemp(path.join(os.tmpdir(), "joty-local-files-smoke-"));
 const file = path.join(temporary, "Local file sample.md");
+await mkdir(path.join(temporary, "other"));
+const other = path.join(temporary, "other", "Local file sample.md");
 await writeFile(file, "# Local file\r\nOriginal text.\r\n");
+await writeFile(other, "Second file\n");
 const env = { ...process.env, JOTY_SMOKE_PROFILE: path.join(temporary, "profile") };
 delete env.ELECTRON_RUN_AS_NODE;
 const app = await _electron.launch({
@@ -21,75 +24,127 @@ const app = await _electron.launch({
 const errors = [];
 app.on("window", (page) => page.on("pageerror", (error) => errors.push(error.message)));
 try {
-  await expect.poll(() => app.windows().length).toBe(2);
-  const local = app.windows().find((page) => page.url().includes("localFile"));
-  const main = app.windows().find((page) => page !== local);
-  // Electron's will-prevent-unload handler owns this prompt, not Playwright.
-  local.on("dialog", () => {});
+  const main = await app.firstWindow();
+  main.on("dialog", () => {}); // Electron's will-prevent-unload owns native prompts.
   const api = new MockApi();
   await main.route(/^https?:\/\//, (route) => route.fulfill({ status: 404, body: "" }));
-  await local.route(/^https?:\/\//, (route) => route.fulfill({ status: 404, body: "" }));
   await api.install(main);
-  await api.install(local);
-  const editor = local.locator(".cm-content");
+  const editor = main.locator(".cm-content");
+  const tabs = main.getByRole("tablist", { name: "Open documents" });
+  const fileTab = (filePath) =>
+    tabs
+      .getByRole("tab")
+      .filter({ has: main.locator('[aria-label="Local file"]') })
+      .and(main.locator(`[title^=${JSON.stringify(filePath)}]`));
+  const answer = (value) =>
+    app.evaluate((_, value) => {
+      globalThis.testDialogAnswer = value;
+    }, value);
+  const menu = (group, label) =>
+    app.evaluate(
+      ({ Menu }, { group, label }) => {
+        Menu.getApplicationMenu()
+          .items.find((item) => item.label === group)
+          .submenu.items.find((item) => item.label === label)
+          .click();
+      },
+      { group, label },
+    );
+  const open = async (paths) => {
+    await app.evaluate(({ dialog }, paths) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: paths });
+    }, paths);
+    await main.evaluate(() => window.joty.files.open());
+  };
+  const context = async (tab, label) => {
+    await tab.click({ button: "right" });
+    await main.getByRole("menuitem", { name: label, exact: true }).click();
+  };
   await expect(editor).toBeVisible();
-  await expect(local.getByText("Local file", { exact: true })).toBeVisible();
-  await expect(local.getByText(file, { exact: true })).toBeVisible();
-  await expect(local.getByRole("button", { name: "Sign in to copy into Joty" })).toBeVisible();
-  await local.bringToFront();
-  console.log("Local file opened; testing typing and save.");
-  await editor.click();
+  await expect(main.getByText(file, { exact: true })).toBeVisible();
+  await expect(main.getByRole("button", { name: "Sign in to copy into Joty" })).toBeVisible();
+  expect(app.windows()).toHaveLength(1);
+  const id = await main.evaluate(() => window.joty.files.list().then((list) => list.openedId));
+  console.log("Testing signed-out tabs, rapid typing and explicit saving.");
   await editor.press("Control+End");
   const extra = "Rapid typing stays local. ".repeat(30);
-  await local.keyboard.type(extra);
+  await main.keyboard.type(extra);
   const expected = "# Local file\nOriginal text.\n" + extra;
   await expect
-    .poll(() => local.evaluate(() => window.joty.files.get().then((doc) => doc.body)))
+    .poll(() => main.evaluate((id) => window.joty.files.get(id).then((doc) => doc.body), id))
     .toBe(expected);
   expect(await readFile(file, "utf8")).toBe("# Local file\r\nOriginal text.\r\n");
   expect(api.requests).toHaveLength(0);
+  await expect(fileTab(file).locator('[aria-label="Unsaved changes"]')).toBeVisible();
+  await expect(fileTab(file)).toHaveClass(/bg-sky-/);
   await editor.press("Control+s");
   await expect.poll(() => readFile(file, "utf8")).toBe(expected.replaceAll("\n", "\r\n"));
-  await expect(local.getByText("Saved on this computer · Ctrl+S to save edits")).toBeVisible();
-
-  // Exercise the native File menu's save request, including the latest keystroke.
-  await local.keyboard.type("!");
-  await app.evaluate(({ Menu }) => {
-    Menu.getApplicationMenu()
-      .items.find((item) => item.label === "File")
-      .submenu.items.find((item) => item.label === "Save File")
-      .click();
-  });
+  await main.keyboard.type("!");
+  await menu("File", "Save File");
   await expect.poll(() => readFile(file, "utf8")).toBe(expected.replaceAll("\n", "\r\n") + "!");
   await editor.press("Backspace");
   await editor.press("Control+s");
   await expect.poll(() => readFile(file, "utf8")).toBe(expected.replaceAll("\n", "\r\n"));
 
-  await app.evaluate(({ dialog }, file) => {
-    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] });
-  }, file);
-  await local.getByRole("button", { name: "Open file…", exact: true }).click();
-  expect(app.windows()).toHaveLength(2);
-
-  // The same Windows Open-with request focuses the existing file window.
+  await open([file, other]);
+  await expect(tabs.getByRole("tab")).toHaveCount(2);
+  await expect(editor).toHaveText("Second file");
+  await editor.press("Control+End");
+  await main.keyboard.type("Other draft");
+  await fileTab(file).click();
+  await expect(editor).toContainText(extra);
+  await editor.press("Control+End");
+  await main.keyboard.type(" Unsaved copy.");
+  await fileTab(other).click();
+  await expect(editor).toContainText("Other draft");
+  await editor.press("Control+z");
+  await expect(editor).not.toContainText("Other draft");
+  await editor.press("Control+y");
+  await expect(editor).toContainText("Other draft");
   await app.evaluate(
     ({ app }, file) =>
       app.emit("second-instance", {}, [process.execPath, "fixture.cjs", file], process.cwd()),
     file,
   );
-  expect(app.windows()).toHaveLength(2);
-  // A notes window cannot read the file even though it shares the preload.
+  await expect(fileTab(file)).toHaveAttribute("aria-selected", "true");
+  expect(app.windows()).toHaveLength(1);
+  await expect(tabs.getByRole("tab")).toHaveCount(2);
   expect(
     await main.evaluate(() =>
-      window.joty.files.get().then(
+      window.joty.files.get("not-issued").then(
         () => false,
         () => true,
       ),
     ),
   ).toBe(true);
+  expect(api.requests).toHaveLength(0);
 
-  await editor.press("Control+End");
-  await local.keyboard.type(" Unsaved copy.");
+  // A second renderer using the same trusted origin/preload still has no file capability.
+  expect(
+    await app.evaluate(
+      async ({ BrowserWindow }, { id, preload }) => {
+        const foreign = new BrowserWindow({
+          show: false,
+          webPreferences: {
+            preload,
+            contextIsolation: true,
+            sandbox: true,
+          },
+        });
+        try {
+          await foreign.loadURL("app://joty/?capture=1");
+          return await foreign.webContents.executeJavaScript(
+            `window.joty.files.get(${JSON.stringify(id)}).then(() => false, () => true)`,
+          );
+        } finally {
+          foreign.destroy();
+        }
+      },
+      { id, preload: path.join(root, "electron/preload.cjs") },
+    ),
+  ).toBe(true);
+
+  console.log("Testing mixed cloud/local tabs and idempotent cloud copy.");
   await app.evaluate(({ BrowserWindow }) => {
     globalThis.testSignedIn = true;
     for (const win of BrowserWindow.getAllWindows())
@@ -99,78 +154,98 @@ try {
         error: null,
       });
   });
+  await expect(main.getByRole("button", { name: "Copy into Joty", exact: true })).toBeVisible();
   const beforeCopy = await readFile(file, "utf8");
-  // Simulate a create that reached the server but whose response was lost.
   let lostCreate;
-  await local.route(
+  await main.route(
     "**/api/notes",
     (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
       lostCreate = route.request().postDataJSON();
       api.upsert(lostCreate);
       return route.abort("connectionreset");
     },
     { times: 1 },
   );
-  await local.getByRole("button", { name: "Copy into Joty", exact: true }).click();
-  await expect(local.getByRole("alert")).toContainText("Couldn't copy into Joty");
-  await local.getByRole("button", { name: "Copy into Joty", exact: true }).click();
-  await expect(local.getByRole("button", { name: "Open Joty copy" })).toBeVisible();
+  await main.getByRole("button", { name: "Copy into Joty", exact: true }).click();
+  await expect(main.getByRole("alert")).toContainText("Couldn't copy into Joty");
+  await fileTab(other).click();
+  await fileTab(file).click();
+  await main.getByRole("button", { name: "Copy into Joty", exact: true }).click();
+  await expect(main.getByRole("button", { name: "Open Joty copy" })).toBeVisible();
   const copied = [...api.notes.values()].find((note) => note.title === "Local file sample");
   expect(copied?.body).toBe(expected + " Unsaved copy.");
   expect(copied.id).toBe(lostCreate.id);
-  expect([...api.notes.values()].filter((note) => note.title === "Local file sample")).toHaveLength(
-    1,
-  );
+  expect([...api.notes.values()].filter((note) => note.title === copied.title)).toHaveLength(1);
   expect(await readFile(file, "utf8")).toBe(beforeCopy);
-  await local.getByRole("button", { name: "Open Joty copy" }).click();
+  await main.getByRole("button", { name: "Open Joty copy" }).click();
   await expect(main).toHaveURL(new RegExp(`/notes/${copied.id}$`));
+  await expect(tabs.getByRole("tab")).toHaveCount(3);
   await expect(main.locator(".cm-line")).toHaveText(copied.body.split("\n"));
+  const cloudTab = tabs
+    .getByRole("tab")
+    .filter({ hasNot: main.locator('[aria-label="Local file"]') });
+  const persisted = await main.evaluate(() => localStorage.getItem("joty-open-tabs"));
+  expect(persisted).not.toContain("local:");
+  expect(persisted).not.toContain(temporary);
+  expect(api.requests.some((request) => request.path.includes("local:"))).toBe(false);
 
-  // An external write must remain untouched; the local draft is still recoverable.
-  await writeFile(file, "Outside change\r\n");
-  await local.getByRole("button", { name: "Save file", exact: true }).click();
-  await expect(local.getByRole("alert")).toContainText("changed outside Joty");
-  expect(await readFile(file, "utf8")).toBe("Outside change\r\n");
-  await app.evaluate(() => {
-    globalThis.testDialogAnswer = 0;
-  });
-  await local.getByRole("button", { name: "Reload", exact: true }).click();
-  await expect(local.locator(".cm-line")).toHaveText((expected + " Unsaved copy.").split("\n"));
-  await app.evaluate(() => {
-    globalThis.testDialogAnswer = 1;
-  });
-  await local.getByRole("button", { name: "Reload", exact: true }).click();
-  await expect(local.locator(".cm-line")).toHaveText(["Outside change", ""]);
-
-  await editor.click();
-  await editor.press("Control+End");
-  await local.keyboard.type("Close protection");
-  await app.evaluate(() => {
-    globalThis.testDialogAnswer = 2;
-  });
-  const localWindow = await app.browserWindow(local);
-  await localWindow.evaluate((win) => win.close());
-  await expect.poll(() => app.evaluate(() => globalThis.testDialogs.length)).toBeGreaterThan(2);
-  expect(local.isClosed()).toBe(false);
-  await expect(editor).toContainText("Close protection");
-  // Cancel quit must keep every window open too.
+  // Background local drafts protect bulk close and application quit.
+  await answer(2);
+  await context(cloudTab, "Close others");
+  await expect(tabs.getByRole("tab")).toHaveCount(3);
+  await context(cloudTab, "Close all");
+  await expect(tabs.getByRole("tab")).toHaveCount(3);
+  await context(fileTab(file), "Close to the right");
+  await expect(tabs.getByRole("tab")).toHaveCount(3);
   await app.evaluate(({ app }) => app.quit());
-  expect(local.isClosed()).toBe(false);
   expect(main.isClosed()).toBe(false);
-  await local.screenshot({ path: path.join(temporary, "local-file.png") });
-  await app.evaluate(() => {
-    globalThis.testDialogAnswer = 0;
-  });
-  await localWindow.evaluate((win) => win.close());
-  await expect.poll(() => local.isClosed()).toBe(true);
+  const mainWindow = await app.browserWindow(main);
+  await mainWindow.evaluate((win) => win.close());
+  expect(main.isClosed()).toBe(false);
+  await fileTab(file).click({ button: "right" });
+  await expect(main.getByRole("menuitem", { name: "Archive", exact: true })).toHaveCount(0);
+  await expect(main.getByRole("menuitem", { name: "Delete", exact: true })).toHaveCount(0);
+  await main.keyboard.press("Escape");
+
+  console.log("Testing disk conflicts, reload, active-tab close and bulk close.");
+  await fileTab(file).click();
+  await writeFile(file, "Outside change\r\n");
+  await main.getByRole("button", { name: "Save file", exact: true }).click();
+  await expect(main.getByRole("alert")).toContainText("changed outside Joty");
+  expect(await readFile(file, "utf8")).toBe("Outside change\r\n");
+  await answer(0);
+  await main.getByRole("button", { name: "Reload", exact: true }).click();
+  await expect(main.locator(".cm-line")).toHaveText((expected + " Unsaved copy.").split("\n"));
+  await answer(1);
+  await main.getByRole("button", { name: "Reload", exact: true }).click();
+  await expect(main.locator(".cm-line")).toHaveText(["Outside change", ""]);
+  await editor.press("Control+End");
+  await main.keyboard.type("Close protection");
+  await answer(2);
+  await menu("Tabs", "Close Tab");
+  await expect(tabs.getByRole("tab")).toHaveCount(3);
+  await expect(editor).toContainText("Close protection");
+  await main.screenshot({ path: path.join(temporary, "local-tabs.png") });
+  await answer(0);
+  await menu("Tabs", "Close Tab");
+  await expect(tabs.getByRole("tab")).toHaveCount(2);
+  await expect(fileTab(other)).toHaveAttribute("aria-selected", "true");
   expect(await readFile(file, "utf8")).toBe("Outside change\r\nClose protection");
+  // Discard closes only the selected files; it must not save their drafts.
+  await answer(1);
+  await context(cloudTab, "Close others");
+  await expect(tabs.getByRole("tab")).toHaveCount(1);
+  await expect(cloudTab).toHaveAttribute("aria-selected", "true");
+  expect(await readFile(other, "utf8")).toBe("Second file\n");
+  expect(app.windows()).toHaveLength(1);
   expect(errors).toEqual([]);
   console.log(
     JSON.stringify({
       passed: true,
-      screenshot: path.join(temporary, "local-file.png"),
+      screenshot: path.join(temporary, "local-tabs.png"),
       checks:
-        "signed-out opening, rapid typing, Ctrl+S, IPC ownership, duplicate open, explicit cloud copy, external conflict, reload, close and quit protection",
+        "single-window mixed tabs, tint/path/dirty indicator, rapid typing, undo across tabs, Ctrl+S/menu save, same-name files, deduplication, unknown IPC ID, copy retry, no local cloud requests/persistence, conflict/reload, cancel/save/discard and bulk close, background quit protection",
       pageErrors: errors,
     }),
   );

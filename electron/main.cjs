@@ -19,7 +19,7 @@ const { loadSettings, saveSettings, loadWindowState, saveWindowState } = require
 const { loadDesktopConfig } = require("./desktop-config.cjs");
 const { AuthManager } = require("./auth.cjs");
 const log = require("./log.cjs");
-const { createLocalFileWindows } = require("./local-file-windows.cjs");
+const { createLocalFileSessions } = require("./local-file-sessions.cjs");
 const { fileArguments } = require("./local-files.cjs");
 
 // Loopback port registered with WorkOS as the desktop redirect URI. It is
@@ -466,7 +466,11 @@ function buildApplicationMenu() {
       label: "File",
       submenu: [
         { label: "Open File…", accelerator: "CmdOrCtrl+O", click: () => localFiles?.pick() },
-        { label: "Save File", accelerator: "CmdOrCtrl+S", click: () => localFiles?.saveFocused() },
+        {
+          label: "Save File",
+          accelerator: "CmdOrCtrl+S",
+          click: () => sendMenuAction("save-file"),
+        },
         { type: "separator" },
         { label: "New Note", accelerator: "CmdOrCtrl+N", click: () => sendMenuAction("new-note") },
         {
@@ -525,7 +529,7 @@ function buildApplicationMenu() {
           label: "Close Tab",
           accelerator: "CmdOrCtrl+W",
           click: () => {
-            if (!localFiles?.closeFocused()) sendMenuAction("close-tab");
+            sendMenuAction("close-tab");
           },
         },
         { label: "Next Tab", accelerator: "Control+Tab", click: () => sendMenuAction("next-tab") },
@@ -773,6 +777,10 @@ async function createWindow() {
   });
 
   attachContextMenu(mainWindow.webContents);
+  mainWindow.webContents.on("will-prevent-unload", (event) => {
+    if (localFiles?.confirmUnload()) event.preventDefault();
+    else isQuitting = false;
+  });
   attachRendererLogging(mainWindow.webContents, "main");
 
   mainWindow.webContents.on("did-finish-load", () => {
@@ -943,17 +951,10 @@ if (!gotLock) {
 
     return createWindow().then(() => {
       applySettings();
-      localFiles = createLocalFileWindows({
-        baseUrl: appBaseUrl,
+      localFiles = createLocalFileSessions({
+        getWindow: () => mainWindow,
         isTrusted: isSelfUrl,
         focusMain: focusMainWindow,
-        openNote: (id) => {
-          const needsWindow = !mainWindow || mainWindow.isDestroyed();
-          focusMainWindow();
-          if (needsWindow) void mainWindow.loadURL(`${appBaseUrl()}/notes/${id}`);
-          else mainWindow.webContents.send("joty:open-note", id);
-        },
-        attachContextMenu,
       });
       [
         ...fileArguments(process.argv, process.cwd(), process.defaultApp),
