@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn, execFile } = require("node:child_process");
+const { spawn, spawnSync, execFile } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const { StringDecoder } = require("node:string_decoder");
 
@@ -110,7 +110,7 @@ const variants = new Map();
 function sqlcmdVariant(exe) {
   if (variants.has(exe)) return variants.get(exe);
   const pending = new Promise((resolve) => {
-    execFile(exe, ["-?"], { windowsHide: true, timeout: 10000 }, (_error, stdout, stderr) => {
+    const classify = (_error, stdout, stderr) => {
       const help = `${stdout ?? ""}${stderr ?? ""}`;
       if (/--[a-z]/.test(help) && !/Version \d+\.\d+\.\d+\.\d+ NT/.test(help)) {
         resolve({ kind: "go", major: 0 });
@@ -118,7 +118,14 @@ function sqlcmdVariant(exe) {
         const match = /Version (\d+)\./.exec(help);
         resolve({ kind: "odbc", major: match ? Number(match[1]) : 0 });
       }
-    });
+    };
+    try {
+      execFile(exe, ["-?"], { windowsHide: true, timeout: 10000 }, classify);
+    } catch (error) {
+      // Node refuses to start a .cmd/.bat shim directly (EINVAL): treat it
+      // as an ODBC sqlcmd, which then runs under cmd.exe.
+      classify(error, "", "");
+    }
   });
   variants.set(exe, pending);
   return pending;
@@ -270,7 +277,13 @@ const cmdSafe = (value) => !/["%!^\r\n]/.test(value);
 
 /**
  * How to start sqlcmd for a parsed connection: { file, args, env, verbatim }.
- * The password is never an argument; it goes through SQLCMDPASSWORD.
+ * The password is never an argument; it goes through SQLCMDPASSWORD. That is
+ * deliberate: a command line is readable by every process of the user and
+ * lands in process-creation auditing (event 4688, EDR), while another
+ * process's environment needs rights to open and read that process. sqlcmd
+ * reads a password only from -P, SQLCMDPASSWORD or an interactive console
+ * prompt, so the environment is the narrowest channel it offers. It lives
+ * only in this child's block (inherited by anything sqlcmd itself starts).
  *
  * ODBC sqlcmd writes piped output in the console's code page (OEM 437/850)
  * and ignores -f for it, so it runs under `cmd /c chcp 65001 && sqlcmd …`.
@@ -410,6 +423,119 @@ function lineSplitter(encoding, onLine) {
   };
 }
 
+// ---------- temp .sql files ----------
+//
+// sqlcmd reads the query from a file (-i), so a SQL run writes its text in
+// plaintext to %TEMP%\joty-run-<pid>-<uuid>.sql (UTF-8 with BOM, exclusive
+// create, mode 0600). Every file is tracked from before it exists until it
+// is gone: removed when the run ends (normal exit, failure, spawn failure,
+// cancel, timeout), again synchronously when the app quits (after killing
+// sqlcmd, which holds it open), on process exit, and swept at the next start
+// when a crash left one behind.
+
+const TEMP_NAME =
+  /^joty-run-(?:(\d+)-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.sql$/i;
+/** A run lasts at most SQL_TIMEOUT_MS, so an older file belongs to no live run. */
+const STALE_TEMP_MS = 2 * SQL_TIMEOUT_MS;
+
+const tempFiles = new Set();
+/** SQL processes reading a temp file: input path -> child. */
+const sqlChildren = new Map();
+let exitHookInstalled = false;
+
+function removeTrackedSync({ retries = 0 } = {}) {
+  for (const file of tempFiles) {
+    try {
+      fs.rmSync(file, { force: true, maxRetries: retries, retryDelay: 100 });
+      tempFiles.delete(file);
+    } catch {
+      // Still in use: the next start's sweep removes it.
+    }
+  }
+}
+
+function tempSqlPath(tmpDir) {
+  const file = path.join(tmpDir, `joty-run-${process.pid}-${randomUUID()}.sql`);
+  tempFiles.add(file);
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    process.once("exit", () => removeTrackedSync());
+  }
+  return file;
+}
+
+async function removeTempFile(file) {
+  try {
+    // Retries cover a just-killed sqlcmd that still holds the file.
+    await fsp.rm(file, { force: true, maxRetries: 3, retryDelay: 200 });
+    tempFiles.delete(file);
+  } catch {
+    // Still tracked: shutdown(), the exit hook or the next start try again.
+  }
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+/**
+ * Removes run files that a crashed or killed Joty left in `tmpDir`: those of
+ * a process that is gone (or of this one, untracked), and any older than a
+ * run can last (including the pid-less names of earlier versions). Files of
+ * another live Joty (a dev build next to the installed app) are left alone.
+ */
+async function sweepTempFiles({
+  tmpDir = os.tmpdir(),
+  now = Date.now(),
+  isAlive = processAlive,
+} = {}) {
+  let names;
+  try {
+    names = await fsp.readdir(tmpDir);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    const match = TEMP_NAME.exec(name);
+    if (!match) continue;
+    const file = path.join(tmpDir, name);
+    if (tempFiles.has(file)) continue;
+    const pid = match[1] ? Number(match[1]) : null;
+    let stale = pid === process.pid || (pid !== null && !isAlive(pid));
+    if (!stale) {
+      try {
+        stale = now - (await fsp.stat(file)).mtimeMs > STALE_TEMP_MS;
+      } catch {
+        continue;
+      }
+    }
+    if (!stale) continue;
+    try {
+      await fsp.rm(file, { force: true });
+      removed++;
+    } catch {
+      // In use or protected: try again next start.
+    }
+  }
+  return removed;
+}
+
+/**
+ * At quit: stop SQL processes that hold a temp file (synchronously, so the
+ * file is free) and delete every tracked file before the app exits.
+ */
+function shutdown() {
+  for (const child of sqlChildren.values()) killTreeSync(child);
+  sqlChildren.clear();
+  removeTrackedSync({ retries: 3 });
+}
+
 // ---------- processes ----------
 
 function childEnv(extra = {}) {
@@ -429,6 +555,21 @@ function killTree(child) {
     execFile(taskkill, ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true }, (error) => {
       if (error) child.kill();
     });
+  } else {
+    child.kill("SIGKILL");
+  }
+}
+
+/** killTree that waits for taskkill (used at quit, where nothing runs afterwards). */
+function killTreeSync(child) {
+  if (!child || child.exitCode !== null || child.pid === undefined) return;
+  if (process.platform === "win32") {
+    const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+    const result = spawnSync(taskkill, ["/PID", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      timeout: 3000,
+    });
+    if (result.status !== 0) child.kill();
   } else {
     child.kill("SIGKILL");
   }
@@ -470,7 +611,10 @@ function startRun(req, onEvent, { exes = available(), tmpDir = os.tmpdir() } = {
     if (finished) return;
     finished = true;
     clearTimeout(timer);
-    if (inputFile) fsp.rm(inputFile, { force: true }).catch(() => {});
+    if (inputFile) {
+      sqlChildren.delete(inputFile);
+      void removeTempFile(inputFile);
+    }
     onEvent(event);
   };
   const fail = (message) => {
@@ -535,13 +679,20 @@ function startRun(req, onEvent, { exes = available(), tmpDir = os.tmpdir() } = {
       const cfg = parseConnectionString(req.connectionString ?? "");
       const variant = await sqlcmdVariant(exes.sqlcmd);
       if (cancelled) return fail("Stopped.");
-      inputFile = path.join(tmpDir, `joty-run-${randomUUID()}.sql`);
-      // UTF-8 with BOM: sqlcmd reads it as Unicode whatever the code page.
-      await fsp.writeFile(inputFile, "\ufeff" + req.code.replace(/\r?\n/g, "\r\n") + "\r\n", {
-        flag: "wx",
-        mode: 0o600,
-      });
+      inputFile = tempSqlPath(tmpDir);
+      try {
+        // UTF-8 with BOM: sqlcmd reads it as Unicode whatever the code page.
+        await fsp.writeFile(inputFile, "\ufeff" + req.code.replace(/\r?\n/g, "\r\n") + "\r\n", {
+          flag: "wx",
+          mode: 0o600,
+        });
+      } finally {
+        // A cancel during the write already ran finish(), whose delete may
+        // have come before the file existed.
+        if (finished) await removeTempFile(inputFile);
+      }
       if (cancelled) return fail("Stopped.");
+      // The password stays in SQLCMDPASSWORD (see sqlcmdLaunch), never in argv.
       const launch = sqlcmdLaunch(cfg, { exe: exes.sqlcmd, inputFile, variant, env: childEnv() });
       const proc = spawn(launch.file, launch.args, {
         windowsHide: true,
@@ -550,6 +701,7 @@ function startRun(req, onEvent, { exes = available(), tmpDir = os.tmpdir() } = {
         env: launch.env,
         stdio: ["ignore", "pipe", "pipe"],
       });
+      sqlChildren.set(inputFile, proc);
       attach(proc, { parser: createSqlcmdParser(onEvent) });
       timer = setTimeout(() => {
         if (finished) return;
@@ -579,4 +731,7 @@ module.exports = {
   powershellBootstrap,
   startRun,
   killTree,
+  sweepTempFiles,
+  shutdown,
+  STALE_TEMP_MS,
 };

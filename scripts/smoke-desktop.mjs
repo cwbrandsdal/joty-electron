@@ -4,6 +4,8 @@
 // Uses the sibling web repo's Playwright; run with `npm run test:smoke`.
 // Set JOTY_SMOKE_SQL to a connection string to include a SQL run, and
 // JOTY_SMOKE_CLIP=1 to include an (automated) screen clip of this screen.
+// JOTY_SMOKE_CLIPBOARD=mock keeps the system clipboard untouched: the main
+// process gets an in-memory clipboard and the secret-clipboard check is skipped.
 /* global window, document, getComputedStyle */
 import { _electron } from "../../joty-web/node_modules/@playwright/test/index.mjs";
 import { MockApi } from "../../joty-web/e2e/mock-api.ts";
@@ -18,6 +20,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const electronExe = path.join(root, "node_modules/electron/dist/electron.exe");
 const fixture = path.join(root, "scripts/fixtures/smoke-main.cjs");
 const shots = process.env.JOTY_SMOKE_SHOTS ?? null;
+const mockClipboard = process.env.JOTY_SMOKE_CLIPBOARD === "mock";
 const temporary = await mkdtemp(path.join(os.tmpdir(), "joty-desktop-smoke-"));
 const profile = path.join(temporary, "profile");
 const env = { ...process.env, JOTY_SMOKE_PROFILE: profile };
@@ -330,6 +333,14 @@ async function launch({ signedIn, args = [] }) {
         JSON.stringify(result),
       );
       assert(result.at(-1).code === 0, `exit ${result.at(-1).code}`);
+      // The plaintext query file is gone once the run has ended.
+      const pid = await app.evaluate(() => process.pid);
+      await until(
+        async () =>
+          !(await readdir(os.tmpdir())).some((name) => name.startsWith(`joty-run-${pid}-`)),
+        "the temp query file to be deleted",
+        5000,
+      );
     });
   }
 
@@ -532,7 +543,55 @@ async function launch({ signedIn, args = [] }) {
     assert(/Only web and mail/.test(result), result);
   });
 
-  await check("diagnostics copy (clipboard restored)", async () => {
+  // Synthetic secrets, assembled at runtime so no token-shaped literal is in the file.
+  const MIX = "k9Qz7Lm2Xp4Rt8Vw1Ny6Hb3Jc5Fd0GsTeUaYi";
+  const fakeConnection = ["Server=db.example.test;User Id=app;Password=", "Tr0ub4dor-n0t-real"];
+  const fakeToken = ["ghp", MIX].join("_");
+  // Recognized only on a line of its own: the [renderer:main] wrapper hid it (R5).
+  const fakeBare = ["Zq8#vL2!", "mK9$wR4p"].join("");
+  const mainLog = path.join(profile, "logs", "joty-main.log");
+
+  await check("log: renderer log calls and console errors are written redacted", async () => {
+    await joty(
+      (text) => window.joty.log("error", `[smoke] sync failed: ${text}`),
+      fakeConnection.join(""),
+    );
+    await main.evaluate((value) => console.error(value), fakeBare);
+    await main.evaluate(
+      (token) => console.error(`[smoke] request refused for ${token}`),
+      fakeToken,
+    );
+    const text = await until(async () => {
+      const log = await readFile(mainLog, "utf8").catch(() => "");
+      return log.includes("[smoke] request refused") ? log : null;
+    }, "the console error in the log");
+    assert(
+      !text.includes(fakeConnection[1]) && !text.includes(fakeToken) && !text.includes(fakeBare),
+      "a secret in the log",
+    );
+    assert(/\[renderer:main\] ⟦secret⟧( \(.*\))?\r?\n/.test(text), "no redacted bare console line");
+    assert(
+      text.includes(
+        "[renderer] [smoke] sync failed: Server=db.example.test;User Id=app;Password=⟦secret⟧",
+      ),
+      "no redacted renderer line",
+    );
+    assert(/\[smoke\] request refused for ⟦secret⟧/.test(text), "no redacted console line");
+  });
+
+  await check("diagnostics copy redacts old log lines (clipboard restored)", async () => {
+    if (mockClipboard) {
+      const mocked = await app.evaluate(({ clipboard }) =>
+        clipboard.readText.toString().includes("held.get"),
+      );
+      assert(mocked, "the clipboard is not mocked; not touching the system clipboard");
+    }
+    // Lines as an older, unredacting version would have written them.
+    await appendFile(
+      mainLog,
+      `2026-10-30T09:00:00.000Z WARN  [legacy] ${fakeConnection.join("")}\n` +
+        `2026-10-30T09:00:01.000Z ERROR [renderer:main] ${fakeBare} (app://joty/assets/x.js)\n`,
+    );
     const saved = await app.evaluate(({ clipboard }) => clipboard.readText());
     const result = await joty(() => window.joty.copyDiagnostics());
     const report = await app.evaluate(({ clipboard }) => clipboard.readText());
@@ -542,8 +601,63 @@ async function launch({ signedIn, args = [] }) {
       report.slice(0, 200),
     );
     assert(!report.includes("top secret"), "sealed text in diagnostics");
+    assert(
+      !report.includes(fakeConnection[1]) &&
+        !report.includes(fakeToken) &&
+        !report.includes(fakeBare),
+      "a secret in diagnostics",
+    );
+    assert(
+      report.includes("[legacy] Server=db.example.test;User Id=app;Password=⟦secret⟧"),
+      "legacy line missing",
+    );
     return `${result.length} characters`;
   });
+
+  if (mockClipboard) {
+    console.log(
+      "SKIP clipboard: a secret skips clipboard history and is cleared — needs the system clipboard",
+    );
+  } else
+    await check("clipboard: a secret skips clipboard history and is cleared", async () => {
+      const saved = await app.evaluate(({ clipboard }) => clipboard.readText());
+      const board = () =>
+        app.evaluate(({ clipboard }) => ({
+          text: clipboard.readText(),
+          history: [...clipboard.readBuffer("CanIncludeInClipboardHistory")],
+          cloud: [...clipboard.readBuffer("CanUploadToCloudClipboard")],
+        }));
+      try {
+        const result = await joty(
+          (text) => window.joty.clipboard.writeSecret(text, 1500),
+          fakeToken,
+        );
+        const copied = await board();
+        assert(copied.text === fakeToken, "the secret is not on the clipboard");
+        assert(result.historyExcluded, "the private copy did not take");
+        assert(
+          copied.history.join() === "0,0,0,0",
+          `CanIncludeInClipboardHistory ${copied.history}`,
+        );
+        assert(copied.cloud.join() === "0,0,0,0", `CanUploadToCloudClipboard ${copied.cloud}`);
+        await until(async () => (await board()).text === "", "the clipboard to clear", 5000);
+        // Copied over in the meantime: left alone.
+        await joty((text) => window.joty.clipboard.writeSecret(text, 1000), fakeToken);
+        await app.evaluate(({ clipboard }) => clipboard.writeText("copied later"));
+        await sleep(1600);
+        assert((await board()).text === "copied later", "cleared something else");
+        const refused = await joty(() =>
+          window.joty.clipboard.writeSecret("", 1000).then(
+            () => "accepted",
+            (e) => e.message,
+          ),
+        );
+        assert(/Nothing to copy/.test(refused), refused);
+        return `${result.clearAfterMs} ms`;
+      } finally {
+        await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), saved);
+      }
+    });
 
   await check("zoom keys persist and resize the caption overlay", async () => {
     await app.evaluate(({ BrowserWindow }) => {

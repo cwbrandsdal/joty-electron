@@ -6,7 +6,8 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist', 'release', 'build']),
+  // electron/generated: the web's secret detector bundled by scripts/build-secrets.mjs
+  globalIgnores(['dist', 'release', 'build', 'electron/generated']),
   // Renderer (desktop shell) — shared UI sources are linted in joty-web
   {
     files: ['src/**/*.{ts,tsx}'],

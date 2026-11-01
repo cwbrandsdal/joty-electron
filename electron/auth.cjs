@@ -213,7 +213,11 @@ class AuthManager {
   transientFailure(reason) {
     const delay = RETRY_DELAYS_MS[Math.min(this.retryIndex, RETRY_DELAYS_MS.length - 1)];
     this.retryIndex++;
-    this.logger.warn(`[auth] refresh failed transiently: ${reason}; retrying in ${delay / 1000}s`);
+    this.logger.warn(
+      "[auth] refresh failed transiently:",
+      reason,
+      `(retrying in ${delay / 1000}s)`,
+    );
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       void this.refresh();
@@ -464,8 +468,10 @@ class AuthManager {
         return this.validateSession(JSON.parse(fs.readFileSync(this.plaintextPath, "utf8")));
       }
     } catch (error) {
+      // V8's JSON.parse message quotes (and truncates) the input: the tokens.
       this.logger.warn(
-        `[auth] stored session unreadable (${error?.message ?? error}); starting signed out`,
+        "[auth] stored session unreadable, starting signed out:",
+        error instanceof SyntaxError ? "not valid JSON" : (error?.message ?? error),
       );
     }
     return null;
@@ -498,7 +504,7 @@ class AuthManager {
         fs.writeFileSync(this.plaintextPath, json, { mode: 0o600 });
       }
     } catch (error) {
-      this.logger.error(`[auth] could not persist the session (${error?.message ?? error})`);
+      this.logger.error("[auth] could not persist the session:", error?.message ?? error);
     }
   }
 
