@@ -1,4 +1,14 @@
-import type { MenuAction, LocalFilesSnapshot } from "@/platform/platform";
+import type {
+  DesktopPrefs,
+  FileOpenResult,
+  FileWatchEvent,
+  MenuAction,
+  RunEvent,
+  RunLanguage,
+} from "@/platform/platform";
+
+// The window.joty bridge exposed by electron/preload.cjs. Every call is
+// validated again in the main process.
 
 export type AppUpdatePhase =
   | "idle"
@@ -22,20 +32,6 @@ export interface AppUpdateState {
   bytesPerSecond?: number;
   transferred?: number;
   total?: number;
-  error?: string;
-}
-
-export interface DesktopSettings {
-  launchAtLogin: boolean;
-  minimizeToTray: boolean;
-  autoDownloadUpdates: boolean;
-  quickCaptureShortcut: string;
-  zoomFactor: number;
-}
-
-export interface PdfExportResult {
-  ok: boolean;
-  filePath?: string;
   error?: string;
 }
 
@@ -75,45 +71,75 @@ export interface DiagnosticsResult {
   file: string | null;
 }
 
+export interface DesktopPrefsState extends DesktopPrefs {
+  /** Why the capture hotkey is not registered (taken by another app), or null. */
+  captureHotkeyError: string | null;
+}
+
 export interface JotyApi {
-  files?: {
-    open: () => Promise<void>;
-    list: () => Promise<LocalFilesSnapshot>;
-    get: (id: string) => Promise<LocalFileDocument>;
-    updateDraft: (id: string, body: string) => void;
-    save: (id: string) => Promise<{ ok: boolean; error?: string }>;
-    reload: (id: string) => Promise<LocalFileDocument | null>;
-    close: (ids: string[]) => Promise<boolean>;
-    onList: (callback: (snapshot: LocalFilesSnapshot) => void) => () => void;
-    onState: (callback: (document: LocalFileDocument) => void) => () => void;
+  version: string;
+  /** Which window this page is in. */
+  window: "main" | "capture";
+  files: {
+    pick: () => Promise<FileOpenResult[]>;
+    open: (path: string) => Promise<FileOpenResult>;
+    write: (
+      path: string,
+      text: string,
+      opts: { encoding: string; eol: "LF" | "CRLF" | "CR" },
+    ) => Promise<{ size: number; mtimeMs: number }>;
+    watch: (path: string, callback: (event: FileWatchEvent) => void) => () => void;
+    recent: () => Promise<string[]>;
+    reveal: (path: string) => void;
+    onOpenRequest: (callback: (paths: string[]) => void) => () => void;
+    pathForFile: (file: File) => string;
+    openDropped: (paths: string[]) => Promise<string[]>;
   };
-  /** Main-process authentication bridge (absent in shells older than 1.4). */
-  auth?: DesktopAuthApi;
-  /** Append to the main-process log (absent in shells older than 1.5). */
-  log?: (level: "info" | "warn" | "error", message: string) => Promise<void>;
-  copyDiagnostics?: () => Promise<DiagnosticsResult>;
+  run: {
+    available: () => Promise<{ powershell: string | null; sqlcmd: string | null }>;
+    start: (
+      req: { language: RunLanguage; code: string; connectionString?: string | null },
+      callback: (event: RunEvent) => void,
+    ) => () => void;
+  };
+  sealed: { read: () => Promise<string | null>; write: (payload: string) => Promise<void> };
+  windowChrome: {
+    /** Native caption buttons width in DIPs; 0 in windows without them. */
+    controlsWidth: number;
+    setColors: (colors: { color: string; symbolColor: string }) => Promise<void>;
+    setMaterial: (
+      material: "mica" | "none",
+    ) => Promise<{ material: "mica" | "none"; supported: boolean }>;
+  };
+  screenClip: () => Promise<{ png: Uint8Array; text: string | null } | null>;
+  ocr: (png: Uint8Array) => Promise<string>;
+  prefs: {
+    get: () => Promise<DesktopPrefsState>;
+    set: (patch: Partial<DesktopPrefs>) => Promise<DesktopPrefsState>;
+  };
+  capture: {
+    done: () => Promise<void>;
+    close: () => Promise<void>;
+    show: () => Promise<void>;
+    onShow: (callback: () => void) => () => void;
+    onHide: (callback: () => void) => () => void;
+  };
+  openExternal: (url: string) => Promise<void>;
+  auth: DesktopAuthApi;
+  log: (level: "info" | "warn" | "error", message: string) => Promise<void>;
+  copyDiagnostics: () => Promise<DiagnosticsResult>;
   getAppUpdateState: () => Promise<AppUpdateState>;
   checkForAppUpdates: () => Promise<AppUpdateState>;
   downloadAppUpdate: () => Promise<AppUpdateState>;
   installAppUpdate: () => Promise<void>;
   onAppUpdateState: (callback: (state: AppUpdateState) => void) => () => void;
-  /** Provided by the application-menu preload bridge; absent in older shells. */
-  onMenuAction?: (callback: (action: MenuAction) => void) => () => void;
-  onOpenNote?: (callback: (noteId: string) => void) => () => void;
-  getSettings: () => Promise<DesktopSettings>;
-  updateSettings: (partial: Partial<DesktopSettings>) => Promise<DesktopSettings>;
-  printNoteToPdf: () => Promise<PdfExportResult>;
+  /** Tray and deep-link actions ("new-note", "open-settings"). */
+  onMenuAction: (callback: (action: MenuAction) => void) => () => void;
+  /** joty://note/<id> */
+  onOpenNote: (callback: (noteId: string) => void) => () => void;
+  printNoteToPdf: () => Promise<{ ok: boolean; filePath?: string; error?: string }>;
   isQuickCapture: () => Promise<boolean>;
   closeQuickCapture: () => Promise<void>;
-}
-
-export interface LocalFileDocument {
-  id: string;
-  path: string;
-  name: string;
-  body: string;
-  savedBody: string;
-  error: string | null;
 }
 
 declare global {

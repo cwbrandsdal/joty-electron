@@ -11,16 +11,43 @@ const {
   protocol,
   screen,
   clipboard,
+  safeStorage,
 } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
 const fs = require("fs");
-const { loadSettings, saveSettings, loadWindowState, saveWindowState } = require("./store.cjs");
+const {
+  DEFAULT_SETTINGS,
+  loadSettings,
+  saveSettings,
+  loadWindowState,
+  saveWindowState,
+  loadRecentFiles,
+  addRecentFile,
+} = require("./store.cjs");
 const { loadDesktopConfig } = require("./desktop-config.cjs");
 const { AuthManager } = require("./auth.cjs");
 const log = require("./log.cjs");
-const { createLocalFileSessions } = require("./local-file-sessions.cjs");
-const { fileArguments } = require("./local-files.cjs");
+const {
+  TEXT_EXTENSIONS,
+  fileArguments,
+  isTextLikeFile,
+  readTextFile,
+  writeTextFile,
+} = require("./text-files.cjs");
+const { createFollower } = require("./file-follow.cjs");
+const runBlocks = require("./run-blocks.cjs");
+const { createSealedStore } = require("./sealed-store.cjs");
+const { runOcr } = require("./ocr.cjs");
+const { screenClip } = require("./screen-clip.cjs");
+const {
+  TITLE_BAR_HEIGHT,
+  CAPTION_CONTROLS_WIDTH,
+  parseColor,
+  overlayColor,
+  backgroundColor,
+  supportsMica,
+} = require("./window-chrome.cjs");
 
 // Loopback port registered with WorkOS as the desktop redirect URI. It is
 // only listened on while a sign-in is in progress (see auth.cjs).
@@ -37,7 +64,10 @@ const useBuiltRenderer = app.isPackaged || process.env.JOTY_USE_BUILT_RENDERER =
 const isDev = !useBuiltRenderer;
 const DEV_URL = "http://127.0.0.1:39173";
 const PROTOCOL = "joty";
+const LOGIN_ARG = "--launched-at-login";
+const CAPTURE_SIZE = { width: 760, height: 360 };
 const desktopConfig = loadDesktopConfig({ isPackaged: app.isPackaged });
+const micaSupported = supportsMica();
 
 // Must run before app.whenReady(): makes app:// behave like https:// for
 // storage, fetch, CORS and service workers.
@@ -66,18 +96,22 @@ const MIME_TYPES = {
   ".woff": "font/woff",
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
+  ".webmanifest": "application/manifest+json",
   ".map": "application/json",
 };
 
 let auth = null;
 let mainWindow = null;
 let captureWindow = null;
+let captureLoaded = false;
+let captureShowPending = false;
+let clipping = false;
 let tray = null;
 let updaterConfigured = false;
 let isQuitting = false;
-let localFiles = null;
-const pendingFiles = [];
-let settings = { ...require("./store.cjs").DEFAULT_SETTINGS };
+let settings = { ...DEFAULT_SETTINGS };
+let captureHotkey = { accelerator: null, error: null };
+let sealedStore = null;
 let appUpdateState = {
   phase: "unsupported",
   currentVersion: app.getVersion(),
@@ -151,15 +185,18 @@ function registerAppProtocol(root) {
 
   protocol.handle(APP_SCHEME, async (request) => {
     let url;
+    let filePath;
     try {
       url = new URL(request.url);
+      filePath = path.resolve(normalizedRoot, "." + decodeURIComponent(url.pathname));
     } catch {
       return new Response("Bad request", { status: 400 });
     }
     if (url.host !== APP_HOST) return new Response("Not found", { status: 404 });
-
-    let filePath = path.resolve(normalizedRoot, "." + decodeURIComponent(url.pathname));
-    if (!filePath.startsWith(normalizedRoot)) return new Response("Forbidden", { status: 403 });
+    const relative = path.relative(normalizedRoot, filePath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      return new Response("Forbidden", { status: 403 });
+    }
 
     try {
       const stat = await fs.promises.stat(filePath);
@@ -223,7 +260,7 @@ function createAuthManager() {
 
 function updateAppUpdateState(nextState) {
   appUpdateState = nextState;
-  mainWindow?.webContents.send("joty:app-update-state", appUpdateState);
+  broadcast("joty:app-update-state", appUpdateState);
 }
 
 function normalizeReleaseNotes(releaseNotes) {
@@ -355,36 +392,137 @@ async function checkForAppUpdates() {
   return appUpdateState;
 }
 
+function installAppUpdate() {
+  if (appUpdateState.phase !== "downloaded") return;
+  isQuitting = true;
+  setImmediate(() => autoUpdater.quitAndInstall());
+}
+
 // --- Settings application ---
 
 function applySettings() {
   if (!isDev) {
-    app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
+    app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin, args: [LOGIN_ARG] });
   }
   autoUpdater.autoDownload = settings.autoDownloadUpdates;
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.setZoomFactor(settings.zoomFactor || 1);
   }
-  registerCaptureShortcut();
 }
 
-function registerCaptureShortcut() {
-  globalShortcut.unregisterAll();
-  const accelerator = settings.quickCaptureShortcut;
-  if (!accelerator) return;
-  try {
-    globalShortcut.register(accelerator, openQuickCapture);
-  } catch {
-    // An invalid or already-claimed accelerator just means no global hotkey.
+// --- Capture hotkey ---
+
+const DISABLED_HOTKEYS = new Set(["", "none", "off", "disabled"]);
+
+/** Electron accelerator for a hotkey setting, or null when capture is off. */
+function hotkeyAccelerator(value) {
+  const text = String(value ?? "").trim();
+  if (DISABLED_HOTKEYS.has(text.toLowerCase())) return null;
+  return text
+    .split("+")
+    .map((part) => part.trim())
+    .map((part) => (/^win(dows)?$/i.test(part) ? "Super" : part))
+    .join("+");
+}
+
+/** Ctrl+Shift+J in any spelling: the renderer owns it while Joty is focused. */
+function isAppCaptureKey(accelerator) {
+  if (!accelerator) return false;
+  const parts = accelerator.toLowerCase().split("+").sort().join("+");
+  return [
+    "commandorcontrol+j+shift",
+    "ctrl+j+shift",
+    "control+j+shift",
+    "cmdorctrl+j+shift",
+  ].includes(parts);
+}
+
+function toggleCapture() {
+  if (
+    captureWindow &&
+    !captureWindow.isDestroyed() &&
+    captureWindow.isVisible() &&
+    captureWindow.isFocused()
+  ) {
+    hideCapture();
+  } else {
+    showCapture();
   }
+}
+
+/** "ok", "taken" (another app holds it) or "invalid" (not an accelerator). */
+function registerAccelerator(accelerator) {
+  // While Joty's own window is focused the renderer handles Ctrl+Shift+J;
+  // the global registration returns when the window loses focus.
+  if (isAppCaptureKey(accelerator) && mainWindow?.isFocused()) return "ok";
+  try {
+    return globalShortcut.register(accelerator, toggleCapture) ? "ok" : "taken";
+  } catch {
+    return "invalid";
+  }
+}
+
+/**
+ * Register the capture hotkey from settings. On failure the error is kept
+ * for desktopPrefs.get(); with `strict` (a settings change) the previous
+ * hotkey is restored and the error thrown so the change is refused.
+ */
+function registerCaptureHotkey(value, { strict = false } = {}) {
+  const accelerator = hotkeyAccelerator(value);
+  const previous = captureHotkey.accelerator;
+  if (accelerator === previous && !captureHotkey.error) return;
+  if (previous && globalShortcut.isRegistered(previous)) globalShortcut.unregister(previous);
+  if (!accelerator) {
+    captureHotkey = { accelerator: null, error: null };
+    return;
+  }
+  const outcome = registerAccelerator(accelerator);
+  if (outcome === "ok") {
+    captureHotkey = { accelerator, error: null };
+    return;
+  }
+  const error =
+    outcome === "invalid"
+      ? `${value} is not a key combination Windows can use.`
+      : `${value} is already used by another app.`;
+  log.warn(`[capture] could not register ${accelerator}: ${outcome}`);
+  if (strict) {
+    if (previous && registerAccelerator(previous) === "ok") {
+      captureHotkey = { accelerator: previous, error: null };
+    }
+    throw new Error(error);
+  }
+  captureHotkey = { accelerator: null, error };
+}
+
+function onMainFocusChanged(focused) {
+  const accelerator = captureHotkey.accelerator;
+  if (!accelerator || !isAppCaptureKey(accelerator)) return;
+  if (focused) {
+    if (globalShortcut.isRegistered(accelerator)) globalShortcut.unregister(accelerator);
+  } else if (
+    !globalShortcut.isRegistered(accelerator) &&
+    registerAccelerator(accelerator) !== "ok"
+  ) {
+    captureHotkey = { accelerator: null, error: `${accelerator} is already used by another app.` };
+  }
+}
+
+/** The hotkey as the web app writes it ("Ctrl+Shift+J"). */
+function displayHotkey(value) {
+  const accelerator = hotkeyAccelerator(value);
+  if (!accelerator) return "none";
+  return accelerator
+    .split("+")
+    .map((part) => (/^(commandorcontrol|cmdorctrl|control|ctrl)$/i.test(part) ? "Ctrl" : part))
+    .join("+");
 }
 
 // --- Renderer messaging ---
 
 function sendMenuAction(action) {
-  const target = BrowserWindow.getFocusedWindow() ?? mainWindow;
-  if (!target || target.isDestroyed() || target.webContents.isDestroyed()) return;
-  target.webContents.send("joty:menu-action", action);
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+  mainWindow.webContents.send("joty:menu-action", action);
 }
 
 function focusMainWindow() {
@@ -397,176 +535,246 @@ function focusMainWindow() {
   mainWindow.focus();
 }
 
-// --- Deep links (joty://note/<id>, joty://new) ---
+// --- Deep links (joty://note/<id>, joty://new, joty://capture) ---
 
 function handleDeepLink(url) {
   if (!url || !url.startsWith(`${PROTOCOL}://`)) return;
   try {
     const parsed = new URL(url);
-    const host = parsed.hostname; // "note" | "new"
+    const host = parsed.hostname; // "note" | "new" | "capture"
     if (host === "new") {
       focusMainWindow();
       sendMenuAction("new-note");
+    } else if (host === "capture") {
+      showCapture();
     } else if (host === "note") {
       const id = parsed.pathname.replace(/^\/+/, "");
       focusMainWindow();
-      if (id && mainWindow) mainWindow.webContents.send("joty:open-note", id);
+      if (/^[\w-]{1,128}$/.test(id) && mainWindow)
+        mainWindow.webContents.send("joty:open-note", id);
     }
   } catch {
     // Malformed deep link — ignore.
   }
 }
 
-// --- Quick capture window ---
+// --- Files opened from outside (argv, Open with, second instance, drop) ---
 
-function openQuickCapture() {
-  if (captureWindow && !captureWindow.isDestroyed()) {
-    captureWindow.show();
-    captureWindow.focus();
-    return;
+const fileOpen = { ready: false, queue: [] };
+
+function requestOpenFiles(paths) {
+  const unique = [...new Set(paths.filter((p) => typeof p === "string" && path.isAbsolute(p)))];
+  if (!unique.length) return;
+  log.info(`[files] open request for ${unique.length} file(s)`);
+  focusMainWindow();
+  if (fileOpen.ready && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("joty:files-open-request", unique);
+  } else {
+    fileOpen.queue.push(...unique);
   }
+}
 
+async function openFileArguments(argv, workingDirectory) {
+  const candidates = fileArguments(argv, workingDirectory, process.defaultApp);
+  const files = [];
+  for (const candidate of candidates) {
+    try {
+      if ((await fs.promises.stat(candidate)).isFile()) files.push(candidate);
+    } catch {
+      // Not a file (a stray switch value or a deleted path).
+    }
+  }
+  requestOpenFiles(files);
+}
+
+// --- File sheets: read, write, follow ---
+
+const pathKey = (p) =>
+  process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p);
+const followers = new Map(); // pathKey -> { follower, watches: Set<watchId> }
+const watches = new Map(); // watchId -> { key, contents }
+const lastBaselines = new Map(); // pathKey -> baseline of the last read/write
+
+function rememberBaseline(filePath, baseline) {
+  const key = pathKey(filePath);
+  lastBaselines.delete(key);
+  lastBaselines.set(key, baseline);
+  if (lastBaselines.size > 100) lastBaselines.delete(lastBaselines.keys().next().value);
+  followers.get(key)?.follower.rebase(baseline);
+}
+
+function rememberRecent(filePath) {
+  try {
+    addRecentFile(filePath);
+    app.addRecentDocument(filePath);
+  } catch {
+    // Recent files are a convenience.
+  }
+}
+
+function startWatch(watchId, filePath, contents) {
+  const key = pathKey(filePath);
+  let entry = followers.get(key);
+  if (!entry) {
+    entry = { watches: new Set(), follower: null };
+    entry.follower = createFollower(filePath, {
+      baseline: lastBaselines.get(key),
+      onEvent: (event) => {
+        for (const id of entry.watches) {
+          const watch = watches.get(id);
+          if (watch && !watch.contents.isDestroyed()) {
+            watch.contents.send("joty:files-watch-event", { watchId: id, event });
+          }
+        }
+      },
+    });
+    followers.set(key, entry);
+  }
+  entry.watches.add(watchId);
+  watches.set(watchId, { key, contents });
+}
+
+function stopWatch(watchId) {
+  const watch = watches.get(watchId);
+  if (!watch) return;
+  watches.delete(watchId);
+  const entry = followers.get(watch.key);
+  if (!entry) return;
+  entry.watches.delete(watchId);
+  if (!entry.watches.size) {
+    entry.follower.close();
+    followers.delete(watch.key);
+  }
+}
+
+// --- Run blocks ---
+
+const runs = new Map(); // runId -> { cancel, contents }
+
+function startRunFor(runId, req, contents) {
+  let queue = [];
+  let timer = null;
+  const flush = () => {
+    timer = null;
+    if (!queue.length || contents.isDestroyed()) return;
+    contents.send("joty:run-events", { runId, events: queue });
+    queue = [];
+  };
+  const cancel = runBlocks.startRun(req, (event) => {
+    queue.push(event);
+    if (event.type === "exit") {
+      runs.delete(runId);
+      clearTimeout(timer);
+      flush();
+    } else if (queue.length >= 500) {
+      clearTimeout(timer);
+      flush();
+    } else if (!timer) {
+      timer = setTimeout(flush, 30);
+    }
+  });
+  runs.set(runId, { cancel, contents });
+}
+
+/** Forget a renderer's watches and stop its runs (reload, navigation, close). */
+function releaseRendererResources(contents) {
+  for (const [id, watch] of watches) if (watch.contents === contents) stopWatch(id);
+  for (const [id, run] of runs) {
+    if (run.contents === contents) {
+      run.cancel();
+      runs.delete(id);
+    }
+  }
+}
+
+// --- Quick capture window (pre-warmed, hidden between uses) ---
+
+function captureBounds() {
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const area = display.workArea;
+  const width = Math.min(CAPTURE_SIZE.width, area.width);
+  const height = Math.min(CAPTURE_SIZE.height, area.height);
+  return { x: Math.round(area.x + (area.width - width) / 2), y: area.y, width, height };
+}
+
+function createCaptureWindow() {
+  captureLoaded = false;
   captureWindow = new BrowserWindow({
-    width: 520,
-    height: 260,
+    ...CAPTURE_SIZE,
+    show: false,
     frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
     resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
     alwaysOnTop: true,
     skipTaskbar: true,
-    title: "Quick capture",
+    hasShadow: false,
+    title: "Joty capture",
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      spellcheck: true,
+      // The hidden slip must react instantly to the hotkey.
+      backgroundThrottling: false,
       preload: path.join(__dirname, "preload.cjs"),
+      additionalArguments: [`--joty-version=${app.getVersion()}`, "--joty-window=capture"],
     },
-    show: false,
   });
-
-  attachRendererLogging(captureWindow.webContents, "capture");
-  captureWindow.loadURL(`${appBaseUrl()}/?capture=1`);
-  captureWindow.once("ready-to-show", () => {
-    captureWindow.show();
-    captureWindow.focus();
+  const win = captureWindow;
+  attachRendererLogging(win.webContents, "capture");
+  attachContextMenu(win.webContents);
+  guardNavigation(win);
+  win.webContents.on("did-finish-load", () => {
+    captureLoaded = true;
+    if (captureShowPending) showCapture();
   });
-  captureWindow.on("blur", () => {
-    // Dismiss on focus loss so it behaves like a spotlight popup.
-    if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close();
+  win.on("blur", () => {
+    if (!clipping) hideCapture();
   });
-  captureWindow.on("closed", () => {
-    captureWindow = null;
+  win.on("close", (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      hideCapture();
+    }
   });
+  win.on("closed", () => {
+    if (captureWindow === win) captureWindow = null;
+  });
+  win.webContents.on("render-process-gone", () => {
+    captureLoaded = false;
+    if (!win.isDestroyed()) win.destroy();
+    if (captureWindow === win) captureWindow = null;
+    setTimeout(() => {
+      if (!isQuitting && (!captureWindow || captureWindow.isDestroyed())) createCaptureWindow();
+    }, 1000);
+  });
+  win.loadURL(`${appBaseUrl()}/?capture=1`);
 }
 
-// --- Application menu ---
+function showCapture() {
+  if (!captureWindow || captureWindow.isDestroyed()) createCaptureWindow();
+  if (!captureLoaded) {
+    captureShowPending = true;
+    return;
+  }
+  captureShowPending = false;
+  captureWindow.setBounds(captureBounds());
+  captureWindow.show();
+  captureWindow.moveTop();
+  captureWindow.focus();
+  captureWindow.webContents.focus();
+  captureWindow.webContents.send("joty:capture-show");
+}
 
-function buildApplicationMenu() {
-  const template = [
-    {
-      label: "File",
-      submenu: [
-        { label: "Open File…", accelerator: "CmdOrCtrl+O", click: () => localFiles?.pick() },
-        {
-          label: "Save File",
-          accelerator: "CmdOrCtrl+S",
-          click: () => sendMenuAction("save-file"),
-        },
-        { type: "separator" },
-        { label: "New Note", accelerator: "CmdOrCtrl+N", click: () => sendMenuAction("new-note") },
-        {
-          label: "Quick Capture",
-          accelerator: settings.quickCaptureShortcut || undefined,
-          click: openQuickCapture,
-        },
-        { type: "separator" },
-        {
-          label: "Export Note as PDF…",
-          accelerator: "CmdOrCtrl+Shift+E",
-          click: () => sendMenuAction("print-pdf"),
-        },
-        {
-          label: "Settings",
-          accelerator: "CmdOrCtrl+,",
-          click: () => sendMenuAction("open-settings"),
-        },
-        { type: "separator" },
-        { role: "quit" },
-      ],
-    },
-    {
-      label: "Edit",
-      submenu: [
-        { role: "undo" },
-        { role: "redo" },
-        { type: "separator" },
-        { role: "cut" },
-        { role: "copy" },
-        { role: "paste" },
-        { role: "selectAll" },
-      ],
-    },
-    {
-      label: "View",
-      submenu: [
-        {
-          label: "Toggle Edit/Preview",
-          accelerator: "CmdOrCtrl+E",
-          click: () => sendMenuAction("toggle-preview"),
-        },
-        { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
-        { type: "separator" },
-        { role: "togglefullscreen" },
-        ...(isDev ? [{ type: "separator" }, { role: "reload" }, { role: "toggleDevTools" }] : []),
-      ],
-    },
-    {
-      label: "Tabs",
-      submenu: [
-        {
-          label: "Close Tab",
-          accelerator: "CmdOrCtrl+W",
-          click: () => {
-            sendMenuAction("close-tab");
-          },
-        },
-        { label: "Next Tab", accelerator: "Control+Tab", click: () => sendMenuAction("next-tab") },
-        {
-          label: "Previous Tab",
-          accelerator: "Control+Shift+Tab",
-          click: () => sendMenuAction("prev-tab"),
-        },
-        { type: "separator" },
-        {
-          label: "Pin/Unpin Note",
-          accelerator: "CmdOrCtrl+P",
-          click: () => sendMenuAction("toggle-pin"),
-        },
-        {
-          label: "Quick Open",
-          accelerator: "CmdOrCtrl+K",
-          click: () => sendMenuAction("toggle-palette"),
-        },
-      ],
-    },
-    {
-      label: "Help",
-      submenu: [
-        {
-          label: "Check for Updates…",
-          click: () => {
-            sendMenuAction("open-settings");
-            checkForAppUpdates().catch(() => {});
-          },
-        },
-        { type: "separator" },
-        { label: `Version ${app.getVersion()}`, enabled: false },
-      ],
-    },
-  ];
-  return Menu.buildFromTemplate(template);
+function hideCapture() {
+  captureShowPending = false;
+  if (!captureWindow || captureWindow.isDestroyed() || !captureWindow.isVisible()) return;
+  captureWindow.hide();
+  captureWindow.webContents.send("joty:capture-hide");
 }
 
 // --- Diagnostics ---
@@ -595,18 +803,24 @@ function attachRendererLogging(webContents, name) {
 
 function diagnosticsReport() {
   const authState = auth?.getState() ?? { status: "unknown" };
+  const exes = runBlocks.available();
   const lines = [
     `Joty ${app.getVersion()} (${app.isPackaged ? "packaged" : "from source"})`,
     `Electron ${process.versions.electron}, Chromium ${process.versions.chrome}, Node ${process.versions.node}`,
-    `OS ${process.platform} ${process.getSystemVersion?.() ?? ""} ${process.arch}`,
+    `OS ${process.platform} ${process.getSystemVersion?.() ?? ""} ${process.arch}, Mica ${micaSupported ? "supported" : "unsupported"}`,
     `Generated ${new Date().toISOString()}`,
     `User data: ${app.getPath("userData")}`,
     `API: ${desktopConfig.apiBaseUrl}`,
     `Auth: ${authState.status}${authState.user?.email ? ` as ${authState.user.email}` : ""}${authState.error ? `, last error: ${authState.error}` : ""}`,
     `Settings: ${JSON.stringify(settings)}`,
+    `Capture hotkey: ${captureHotkey.accelerator ?? "off"}${captureHotkey.error ? ` (${captureHotkey.error})` : ""}`,
+    `Sealed store: ${safeStorage.isEncryptionAvailable() ? "OS encryption available" : "OS encryption unavailable"}`,
+    `Run blocks: PowerShell ${exes.powershell ? "found" : "missing"}, sqlcmd ${exes.sqlcmd ? "found" : "missing"}`,
     `Displays: ${screen
       .getAllDisplays()
-      .map((d) => `${d.bounds.width}x${d.bounds.height}@${d.bounds.x},${d.bounds.y}`)
+      .map(
+        (d) => `${d.bounds.width}x${d.bounds.height}@${d.bounds.x},${d.bounds.y} x${d.scaleFactor}`,
+      )
       .join(" | ")}`,
     `Window: ${
       mainWindow && !mainWindow.isDestroyed() ? JSON.stringify(mainWindow.getBounds()) : "none"
@@ -653,27 +867,27 @@ function attachContextMenu(webContents) {
 
 // --- Tray ---
 
-function trayIcon() {
-  const iconPath = path.join(__dirname, "..", "build", "icon.ico");
-  const image = nativeImage.createFromPath(iconPath);
-  return image.isEmpty() ? undefined : image;
+function iconPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "icon.ico")
+    : path.join(__dirname, "..", "build", "icon.ico");
 }
 
 function createTray() {
-  const image = trayIcon();
-  tray = image ? new Tray(image) : new Tray(nativeImage.createEmpty());
+  const image = nativeImage.createFromPath(iconPath());
+  tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
   tray.setToolTip("Joty");
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "Open Joty", click: focusMainWindow },
       {
-        label: "New Note",
+        label: "New Sheet",
         click: () => {
           focusMainWindow();
           sendMenuAction("new-note");
         },
       },
-      { label: "Quick Capture", click: openQuickCapture },
+      { label: "Capture", click: showCapture },
       { type: "separator" },
       {
         label: "Check for Updates…",
@@ -732,83 +946,211 @@ function usableWindowState(saved) {
   return { width, height, maximized: saved.maximized };
 }
 
-async function createWindow() {
-  const saved = usableWindowState(loadWindowState());
-  mainWindow = new BrowserWindow({
-    width: saved?.width ?? 1280,
-    height: saved?.height ?? 800,
-    x: saved?.x,
-    y: saved?.y,
-    minWidth: 800,
-    minHeight: 600,
-    title: "Joty",
-    icon: path.join(__dirname, "..", "build", "icon.ico"),
-    autoHideMenuBar: true,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      spellcheck: true,
-      preload: path.join(__dirname, "preload.cjs"),
-    },
-    show: false,
-  });
+/** The remembered skin colours, parsed ({ r, g, b, a }). */
+function chromeColors() {
+  const chrome = settings.windowChrome ?? DEFAULT_SETTINGS.windowChrome;
+  const fallback = DEFAULT_SETTINGS.windowChrome;
+  return {
+    color: parseColor(chrome.color) ?? parseColor(fallback.color),
+    symbolColor: parseColor(chrome.symbolColor) ?? parseColor(fallback.symbolColor),
+  };
+}
 
-  if (saved?.maximized) mainWindow.maximize();
+/** The title bar overlay follows the bar's CSS height through zoom. */
+function overlayOptions() {
+  const { color, symbolColor } = chromeColors();
+  return {
+    color: overlayColor(color),
+    symbolColor: overlayColor(symbolColor),
+    height: Math.round(TITLE_BAR_HEIGHT * (settings.zoomFactor || 1)),
+  };
+}
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    const currentUrl = mainWindow.webContents.getURL();
+/** Behind the page: the skin's colour, or clear for Mica. */
+function windowBackground(material) {
+  return material === "mica"
+    ? "#00000000"
+    : backgroundColor(chromeColors().color, { opaque: true });
+}
+
+function applyMaterial(material) {
+  if (!mainWindow || mainWindow.isDestroyed()) return "none";
+  const effective = material === "mica" && micaSupported ? "mica" : "none";
+  if (micaSupported) mainWindow.setBackgroundMaterial(effective);
+  // "none" resets the background to white; restore the skin's colour after.
+  mainWindow.setBackgroundColor(windowBackground(effective));
+  return effective;
+}
+
+function setZoom(factor) {
+  const zoom = Math.min(3, Math.max(0.5, Math.round(factor * 100) / 100));
+  settings = saveSettings({ ...settings, zoomFactor: zoom });
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.setZoomFactor(zoom);
+  mainWindow.setTitleBarOverlay(overlayOptions());
+}
+
+const ZOOM_STEPS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+
+/**
+ * Keys the shell keeps with no menu bar: zoom, and DevTools when running from
+ * source. Everything else (Ctrl+K/S/O/D/E/M/., Alt+digits…) reaches the page.
+ */
+function handleShellKeys(event, input) {
+  if (input.type !== "keyDown" || !input.control || input.alt || input.meta) return;
+  const key = input.key.toLowerCase();
+  if (!app.isPackaged && input.shift && key === "i") {
+    event.preventDefault();
+    mainWindow?.webContents.toggleDevTools();
+    return;
+  }
+  if (input.shift && key !== "+") return;
+  const current = settings.zoomFactor || 1;
+  if (key === "=" || key === "+") {
+    event.preventDefault();
+    setZoom(ZOOM_STEPS.find((z) => z > current + 0.001) ?? current);
+  } else if (key === "-") {
+    event.preventDefault();
+    setZoom([...ZOOM_STEPS].reverse().find((z) => z < current - 0.001) ?? current);
+  } else if (key === "0") {
+    event.preventDefault();
+    setZoom(1);
+  }
+}
+
+function guardNavigation(win) {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    const currentUrl = win.webContents.getURL();
     const isSpawnedFromAuthFlow = isAuthFlowUrl(currentUrl) && !isSelfUrl(currentUrl);
-    if (isAuthFlowUrl(url) || (isSpawnedFromAuthFlow && url.startsWith("https:"))) {
-      mainWindow.loadURL(url);
+    if (
+      win === mainWindow &&
+      (isAuthFlowUrl(url) || (isSpawnedFromAuthFlow && url.startsWith("https:")))
+    ) {
+      win.loadURL(url);
     } else if (/^https?:/i.test(url)) {
       shell.openExternal(url);
     }
     return { action: "deny" };
   });
 
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (isSelfUrl(url) || isAuthFlowUrl(url)) return;
-    const currentUrl = mainWindow.webContents.getURL();
-    const withinAuthFlow = isAuthFlowUrl(currentUrl) && !isSelfUrl(currentUrl);
-    if (withinAuthFlow && url.startsWith("https:")) return;
+  win.webContents.on("will-navigate", (event, url) => {
+    if (isSelfUrl(url)) return;
+    if (win === mainWindow) {
+      if (isAuthFlowUrl(url)) return;
+      const currentUrl = win.webContents.getURL();
+      const withinAuthFlow = isAuthFlowUrl(currentUrl) && !isSelfUrl(currentUrl);
+      if (withinAuthFlow && url.startsWith("https:")) return;
+    }
+    // Includes file:// from a drop the page did not handle.
     event.preventDefault();
     if (/^https?:/i.test(url)) shell.openExternal(url);
   });
+}
 
-  attachContextMenu(mainWindow.webContents);
-  mainWindow.webContents.on("will-prevent-unload", (event) => {
-    if (localFiles?.confirmUnload()) event.preventDefault();
+async function createWindow() {
+  const saved = usableWindowState(loadWindowState());
+  const material = settings.windowChrome?.material === "mica" && micaSupported ? "mica" : "none";
+  mainWindow = new BrowserWindow({
+    width: saved?.width ?? 1280,
+    height: saved?.height ?? 800,
+    x: saved?.x,
+    y: saved?.y,
+    minWidth: 640,
+    minHeight: 480,
+    title: "Joty",
+    icon: iconPath(),
+    // Frameless look with the native caption buttons kept (Snap layouts,
+    // double-click to maximize); the web app draws the 48 px bar.
+    titleBarStyle: "hidden",
+    titleBarOverlay: overlayOptions(),
+    backgroundColor: windowBackground(material),
+    ...(material === "mica" ? { backgroundMaterial: "mica" } : {}),
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      spellcheck: true,
+      preload: path.join(__dirname, "preload.cjs"),
+      additionalArguments: [
+        `--joty-version=${app.getVersion()}`,
+        "--joty-window=main",
+        `--joty-controls-width=${CAPTION_CONTROLS_WIDTH}`,
+      ],
+    },
+    show: false,
+  });
+  const win = mainWindow;
+
+  if (saved?.maximized) win.maximize();
+
+  guardNavigation(win);
+  attachContextMenu(win.webContents);
+  win.webContents.on("before-input-event", handleShellKeys);
+  win.webContents.on("will-prevent-unload", (event) => {
+    // The page asked to confirm leaving (unsaved file edits, say).
+    const answer = dialog.showMessageBoxSync(win, {
+      type: "warning",
+      title: "Unsaved changes",
+      message: "Joty has changes that are not written yet. Close anyway?",
+      buttons: ["Close", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (answer === 0) event.preventDefault();
     else isQuitting = false;
   });
-  attachRendererLogging(mainWindow.webContents, "main");
+  attachRendererLogging(win.webContents, "main");
 
-  mainWindow.webContents.on("did-finish-load", () => {
-    mainWindow.webContents.setZoomFactor(settings.zoomFactor || 1);
+  win.webContents.on("did-finish-load", () => {
+    win.webContents.setZoomFactor(settings.zoomFactor || 1);
+  });
+  win.webContents.on("zoom-changed", (_event, direction) => {
+    const current = settings.zoomFactor || 1;
+    if (direction === "in") setZoom(ZOOM_STEPS.find((z) => z > current + 0.001) ?? current);
+    else setZoom([...ZOOM_STEPS].reverse().find((z) => z < current - 0.001) ?? current);
+  });
+  win.webContents.on("did-start-navigation", (details) => {
+    if (!details.isMainFrame || details.isSameDocument) return;
+    // A reload or navigation drops the page's subscriptions.
+    fileOpen.ready = false;
+    releaseRendererResources(win.webContents);
+  });
+  win.webContents.on("destroyed", () => releaseRendererResources(win.webContents));
+
+  // Launched at sign-in with the tray on: stay warm but out of the way.
+  const startHidden = process.argv.includes(LOGIN_ARG) && settings.minimizeToTray;
+  win.once("ready-to-show", () => {
+    if (!startHidden) win.show();
   });
 
-  mainWindow.once("ready-to-show", () => mainWindow.show());
-
   // Minimize-to-tray: intercept close unless the app is really quitting.
-  mainWindow.on("close", (event) => {
+  win.on("close", (event) => {
     persistWindowState();
     if (settings.minimizeToTray && !isQuitting) {
       event.preventDefault();
-      mainWindow.hide();
+      win.hide();
     }
+  });
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
+    // The hidden capture window would otherwise keep the app alive.
+    if (isQuitting || !settings.minimizeToTray) app.quit();
   });
 
   // Coming back to the window is a good moment to make sure the token is
   // fresh (covers long idle periods where timers may have been throttled).
-  mainWindow.on("focus", () => auth?.onResume());
-  mainWindow.on("show", () => auth?.onResume());
+  win.on("focus", () => {
+    auth?.onResume();
+    onMainFocusChanged(true);
+  });
+  win.on("blur", () => onMainFocusChanged(false));
+  win.on("show", () => auth?.onResume());
 
   if (isDev) {
-    mainWindow.loadURL(`${DEV_URL}/notes`);
-    if (!app.isPackaged) mainWindow.webContents.openDevTools();
+    win.loadURL(`${DEV_URL}/notes`);
   } else {
-    registerAppProtocol(path.join(app.getAppPath(), "dist", "renderer"));
-    mainWindow.loadURL(`${APP_ORIGIN}/notes`);
+    win.loadURL(`${APP_ORIGIN}/notes`);
   }
 
   configureAutoUpdater();
@@ -816,31 +1158,179 @@ async function createWindow() {
 
 // --- IPC ---
 
+const MAX_TEXT_CHARS = 200 * 1024 * 1024;
+
+/** Which of our windows sent this (only top-level frames on Joty's origin). */
+function senderKind(event) {
+  const frame = event.senderFrame;
+  if (!frame || frame !== event.sender.mainFrame || !isSelfUrl(frame.url)) return null;
+  if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
+    return "main";
+  }
+  if (captureWindow && !captureWindow.isDestroyed() && event.sender === captureWindow.webContents) {
+    return "capture";
+  }
+  return null;
+}
+
+function trusted(event, ...kinds) {
+  const kind = senderKind(event);
+  if (!kind || (kinds.length && !kinds.includes(kind))) throw new Error("Untrusted request.");
+  return kind;
+}
+
+function handle(channel, kinds, handler) {
+  ipcMain.handle(channel, (event, ...args) => {
+    trusted(event, ...kinds);
+    return handler(event, ...args);
+  });
+}
+
+function absolutePath(value) {
+  if (typeof value !== "string" || value.length > 32767 || !path.isAbsolute(value)) {
+    throw new Error("A full file path is required.");
+  }
+  return path.normalize(value);
+}
+
+const validId = (value) => typeof value === "string" && /^[\w-]{8,64}$/.test(value);
+
+function desktopPrefs() {
+  return {
+    launchAtLogin: !!settings.launchAtLogin,
+    minimizeToTray: !!settings.minimizeToTray,
+    autoUpdate: !!settings.autoDownloadUpdates,
+    captureHotkey: displayHotkey(settings.quickCaptureShortcut),
+    captureHotkeyError: captureHotkey.error,
+  };
+}
+
+function setDesktopPrefs(patch) {
+  if (!patch || typeof patch !== "object") throw new Error("Invalid settings.");
+  const next = { ...settings };
+  for (const [key, field] of [
+    ["launchAtLogin", "launchAtLogin"],
+    ["minimizeToTray", "minimizeToTray"],
+    ["autoUpdate", "autoDownloadUpdates"],
+  ]) {
+    if (patch[key] === undefined) continue;
+    if (typeof patch[key] !== "boolean") throw new Error(`${key} must be true or false.`);
+    next[field] = patch[key];
+  }
+  if (patch.captureHotkey !== undefined) {
+    if (typeof patch.captureHotkey !== "string" || patch.captureHotkey.length > 64) {
+      throw new Error("Invalid capture hotkey.");
+    }
+    registerCaptureHotkey(patch.captureHotkey, { strict: true });
+    next.quickCaptureShortcut = patch.captureHotkey.trim();
+  }
+  settings = saveSettings(next);
+  applySettings();
+  return desktopPrefs();
+}
+
+async function pickFiles() {
+  const options = {
+    title: "Open a file",
+    properties: ["openFile", "multiSelections"],
+    filters: [
+      { name: "Text files", extensions: [...TEXT_EXTENSIONS] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  };
+  const result = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options);
+  if (result.canceled) return [];
+  const opened = [];
+  let firstError = null;
+  for (const filePath of result.filePaths) {
+    try {
+      opened.push(await openFile(filePath));
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+  if (!opened.length && firstError) throw firstError;
+  return opened;
+}
+
+async function openFile(filePath) {
+  const { result, baseline } = await readTextFile(absolutePath(filePath));
+  rememberBaseline(result.path, baseline);
+  if (result.path !== filePath) rememberBaseline(filePath, baseline);
+  rememberRecent(result.path);
+  return result;
+}
+
+/** Shrink images beyond the OCR engine's limit (10,000 px on current Windows). */
+function ocrReady(png) {
+  const image = nativeImage.createFromBuffer(png);
+  if (image.isEmpty()) return null;
+  const { width, height } = image.getSize();
+  const limit = 9000;
+  if (width <= limit && height <= limit) return png;
+  const scale = limit / Math.max(width, height);
+  return image
+    .resize({
+      width: Math.floor(width * scale),
+      height: Math.floor(height * scale),
+      quality: "best",
+    })
+    .toPNG();
+}
+
+function ocrScriptPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "ocr-win.ps1")
+    : path.join(__dirname, "ocr-win.ps1");
+}
+
+async function ocrPng(png) {
+  const ready = ocrReady(png);
+  if (!ready) return "";
+  return runOcr(ready, { scriptPath: ocrScriptPath(), log });
+}
+
 function registerIpc() {
-  ipcMain.handle("joty:auth-get-state", () => auth.getState());
-  ipcMain.handle("joty:auth-get-access-token", () => auth.getAccessToken());
-  ipcMain.handle("joty:auth-sign-in", (_event, returnTo) => auth.signIn(returnTo));
-  ipcMain.handle("joty:auth-sign-out", async () => {
+  // Authentication (the main and capture windows both need a token).
+  handle("joty:auth-get-state", [], () => auth.getState());
+  handle("joty:auth-get-access-token", [], () => auth.getAccessToken());
+  handle("joty:auth-sign-in", ["main"], (_event, returnTo) => auth.signIn(returnTo));
+  handle("joty:auth-sign-out", ["main"], async () => {
     await auth.signOut();
     // Land on the landing page rather than a protected route.
     mainWindow?.loadURL(`${appBaseUrl()}/`);
   });
 
-  ipcMain.handle("joty:log", (_event, level, message) => {
+  handle("joty:log", [], (_event, level, message) => {
     const text = `[renderer] ${String(message).slice(0, 2000)}`;
     if (level === "error") log.error(text);
     else if (level === "warn") log.warn(text);
     else log.info(text);
   });
-  ipcMain.handle("joty:copy-diagnostics", () => {
+  handle("joty:copy-diagnostics", [], () => {
     const report = diagnosticsReport();
     clipboard.writeText(report);
     return { ok: true, length: report.length, file: log.file };
   });
+  handle("joty:open-external", [], (_event, url) => {
+    let parsed;
+    try {
+      parsed = new URL(String(url));
+    } catch {
+      throw new Error("Invalid link.");
+    }
+    if (!["https:", "http:", "mailto:"].includes(parsed.protocol)) {
+      throw new Error("Only web and mail links open outside Joty.");
+    }
+    return shell.openExternal(parsed.toString());
+  });
 
-  ipcMain.handle("joty:get-app-update-state", async () => appUpdateState);
-  ipcMain.handle("joty:check-for-app-updates", () => checkForAppUpdates());
-  ipcMain.handle("joty:download-app-update", async () => {
+  // Updates.
+  handle("joty:get-app-update-state", [], async () => appUpdateState);
+  handle("joty:check-for-app-updates", ["main"], () => checkForAppUpdates());
+  handle("joty:download-app-update", ["main"], async () => {
     if (!app.isPackaged) {
       updateAppUpdateState({
         phase: "unsupported",
@@ -852,44 +1342,173 @@ function registerIpc() {
     await autoUpdater.downloadUpdate();
     return appUpdateState;
   });
-  ipcMain.handle("joty:install-app-update", async () => {
-    if (appUpdateState.phase !== "downloaded") return;
-    if (!localFiles?.confirmQuit()) return;
-    isQuitting = true;
-    setImmediate(() => autoUpdater.quitAndInstall());
-  });
+  handle("joty:install-app-update", ["main"], async () => installAppUpdate());
 
-  ipcMain.handle("joty:get-settings", async () => settings);
-  ipcMain.handle("joty:update-settings", async (_event, partial) => {
-    settings = saveSettings({ ...settings, ...partial });
-    applySettings();
+  // Desktop preferences (old settings shape kept for older renderers).
+  handle("joty:prefs-get", [], () => desktopPrefs());
+  handle("joty:prefs-set", ["main"], (_event, patch) => setDesktopPrefs(patch));
+  handle("joty:get-settings", [], async () => settings);
+  handle("joty:update-settings", ["main"], async (_event, partial) => {
+    const patch = {};
+    if (partial && typeof partial === "object") {
+      if (typeof partial.launchAtLogin === "boolean") patch.launchAtLogin = partial.launchAtLogin;
+      if (typeof partial.minimizeToTray === "boolean")
+        patch.minimizeToTray = partial.minimizeToTray;
+      if (typeof partial.autoDownloadUpdates === "boolean")
+        patch.autoUpdate = partial.autoDownloadUpdates;
+      if (typeof partial.quickCaptureShortcut === "string")
+        patch.captureHotkey = partial.quickCaptureShortcut;
+      if (typeof partial.zoomFactor === "number") setZoom(partial.zoomFactor);
+    }
+    setDesktopPrefs(patch);
     return settings;
   });
 
-  ipcMain.handle("joty:print-note-pdf", async () => {
+  // Window chrome.
+  handle("joty:window-set-colors", ["main"], (_event, colors) => {
+    const color = parseColor(colors?.color);
+    const symbolColor = parseColor(colors?.symbolColor);
+    if (!color || !symbolColor) throw new Error("Colours must be CSS hex or rgb() values.");
+    settings = saveSettings({
+      ...settings,
+      windowChrome: {
+        ...settings.windowChrome,
+        color: colors.color,
+        symbolColor: colors.symbolColor,
+      },
+    });
+    mainWindow.setTitleBarOverlay(overlayOptions());
+    // A translucent skin colour (Vellum) is not a usable window background.
+    if (settings.windowChrome.material !== "mica" && color.a === 1) {
+      mainWindow.setBackgroundColor(windowBackground("none"));
+    }
+  });
+  handle("joty:window-set-material", ["main"], (_event, material) => {
+    if (material !== "mica" && material !== "none") throw new Error("Unknown material.");
+    const effective = applyMaterial(material);
+    settings = saveSettings({ ...settings, windowChrome: { ...settings.windowChrome, material } });
+    return { material: effective, supported: micaSupported };
+  });
+
+  // File sheets.
+  handle("joty:files-pick", ["main"], () => pickFiles());
+  handle("joty:files-open", ["main"], (_event, filePath) => openFile(filePath));
+  handle("joty:files-write", ["main"], async (_event, filePath, text, opts) => {
+    const target = absolutePath(filePath);
+    if (typeof text !== "string" || text.length > MAX_TEXT_CHARS)
+      throw new Error("Nothing to write.");
+    if (!opts || typeof opts.encoding !== "string" || typeof opts.eol !== "string") {
+      throw new Error("Encoding and line ending are required.");
+    }
+    const written = await writeTextFile(target, text, { encoding: opts.encoding, eol: opts.eol });
+    rememberBaseline(written.path, written.baseline);
+    if (written.path !== target) rememberBaseline(target, written.baseline);
+    rememberRecent(written.path);
+    return { size: written.size, mtimeMs: written.mtimeMs };
+  });
+  handle("joty:files-watch", ["main"], (event, watchId, filePath) => {
+    if (!validId(watchId)) throw new Error("Invalid watch.");
+    stopWatch(watchId);
+    startWatch(watchId, absolutePath(filePath), event.sender);
+  });
+  handle("joty:files-unwatch", ["main"], (_event, watchId) => {
+    if (validId(watchId)) stopWatch(watchId);
+  });
+  handle("joty:files-recent", ["main"], () => loadRecentFiles());
+  handle("joty:files-reveal", ["main"], (_event, filePath) => {
+    shell.showItemInFolder(absolutePath(filePath));
+  });
+  handle("joty:files-take-open-requests", ["main"], () => {
+    fileOpen.ready = true;
+    return fileOpen.queue.splice(0);
+  });
+  handle("joty:files-dropped", ["main"], async (_event, paths) => {
+    if (!Array.isArray(paths)) throw new Error("Invalid drop.");
+    const accepted = [];
+    for (const candidate of paths.slice(0, 50)) {
+      try {
+        const filePath = absolutePath(candidate);
+        if (await isTextLikeFile(filePath)) accepted.push(filePath);
+      } catch {
+        // Not a usable path.
+      }
+    }
+    requestOpenFiles(accepted);
+    return accepted;
+  });
+
+  // Run blocks.
+  handle("joty:run-available", ["main"], () => runBlocks.available());
+  handle("joty:run-start", ["main"], (event, runId, req) => {
+    if (!validId(runId) || runs.has(runId)) throw new Error("Invalid run.");
+    if (!req || (req.language !== "powershell" && req.language !== "sql")) {
+      throw new Error("Joty runs PowerShell and SQL blocks.");
+    }
+    if (typeof req.code !== "string" || req.code.length > 1024 * 1024)
+      throw new Error("Nothing to run.");
+    if (
+      req.connectionString != null &&
+      (typeof req.connectionString !== "string" || req.connectionString.length > 4096)
+    ) {
+      throw new Error("Invalid connection string.");
+    }
+    if (runs.size >= 8) throw new Error("Too many runs at once. Stop one first.");
+    startRunFor(
+      runId,
+      { language: req.language, code: req.code, connectionString: req.connectionString ?? null },
+      event.sender,
+    );
+  });
+  handle("joty:run-cancel", ["main"], (_event, runId) => {
+    runs.get(runId)?.cancel();
+  });
+
+  // Sealed sheets.
+  handle("joty:sealed-read", ["main"], () => sealedStore.read());
+  handle("joty:sealed-write", ["main"], (_event, payload) => sealedStore.write(payload));
+
+  // Screen clip and OCR.
+  handle("joty:screen-clip", [], async (event) => {
+    const sender = BrowserWindow.fromWebContents(event.sender);
+    clipping = true;
+    let result;
+    try {
+      result = await screenClip({ windows: [mainWindow, captureWindow], focusAfter: sender, log });
+    } finally {
+      clipping = false;
+    }
+    if (!result) return null;
+    const text = await ocrPng(result.png).catch(() => "");
+    return { png: result.png, text: text || null };
+  });
+  handle("joty:ocr", [], (_event, png) => {
+    if (!(png instanceof Uint8Array) || png.length > 64 * 1024 * 1024)
+      throw new Error("Invalid image.");
+    return ocrPng(Buffer.from(png.buffer, png.byteOffset, png.byteLength));
+  });
+
+  // Quick capture window.
+  handle("joty:capture-done", ["capture"], () => hideCapture());
+  handle("joty:capture-show", ["main"], () => showCapture());
+  handle("joty:is-quick-capture", [], (event) => senderKind(event) === "capture");
+  handle("joty:close-quick-capture", ["capture"], () => hideCapture());
+
+  // Export the current page as PDF.
+  handle("joty:print-note-pdf", ["main"], async () => {
     if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
     try {
       const data = await mainWindow.webContents.printToPDF({ printBackground: true });
       const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
-        title: "Export note as PDF",
-        defaultPath: "note.pdf",
+        title: "Export as PDF",
+        defaultPath: "sheet.pdf",
         filters: [{ name: "PDF", extensions: ["pdf"] }],
       });
       if (canceled || !filePath) return { ok: false };
-      fs.writeFileSync(filePath, data);
+      await fs.promises.writeFile(filePath, data);
       return { ok: true, filePath };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
-  });
-
-  ipcMain.handle("joty:is-quick-capture", (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    return win === captureWindow;
-  });
-  ipcMain.handle("joty:close-quick-capture", (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (win && win === captureWindow) win.close();
   });
 }
 
@@ -900,13 +1519,11 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, argv, workingDirectory) => {
-    focusMainWindow();
-    const files = fileArguments(argv, workingDirectory, process.defaultApp);
-    if (localFiles) files.forEach(localFiles.open);
-    else pendingFiles.push(...files);
     // A deep link launched the second instance (Windows passes it in argv).
     const deepLink = argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
     if (deepLink) handleDeepLink(deepLink);
+    else focusMainWindow();
+    void openFileArguments(argv, workingDirectory);
   });
 
   // macOS delivers deep links via open-url.
@@ -917,8 +1534,7 @@ if (!gotLock) {
 
   app.on("open-file", (event, filePath) => {
     event.preventDefault();
-    if (localFiles) localFiles.open(filePath);
-    else pendingFiles.push(filePath);
+    requestOpenFiles([filePath]);
   });
 
   process.on("uncaughtException", (error) => log.error("[main] uncaught exception", error));
@@ -936,6 +1552,10 @@ if (!gotLock) {
     );
     settings = loadSettings();
     log.info("settings", settings);
+    sealedStore = createSealedStore({
+      file: path.join(app.getPath("userData"), "joty-sealed.bin"),
+      safeStorage,
+    });
 
     if (isDev && process.argv.length >= 2) {
       app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
@@ -943,34 +1563,27 @@ if (!gotLock) {
       app.setAsDefaultProtocolClient(PROTOCOL);
     }
 
+    if (!isDev) registerAppProtocol(path.join(app.getAppPath(), "dist", "renderer"));
     auth = createAuthManager();
-    Menu.setApplicationMenu(buildApplicationMenu());
+    // No application menu: the web app owns its shortcuts (see handleShellKeys).
+    Menu.setApplicationMenu(null);
     registerIpc();
     createTray();
-    registerCaptureShortcut();
 
     return createWindow().then(() => {
       applySettings();
-      localFiles = createLocalFileSessions({
-        getWindow: () => mainWindow,
-        isTrusted: isSelfUrl,
-        focusMain: focusMainWindow,
-      });
-      [
-        ...fileArguments(process.argv, process.cwd(), process.defaultApp),
-        ...pendingFiles.splice(0),
-      ].forEach(localFiles.open);
+      registerCaptureHotkey(settings.quickCaptureShortcut);
+      if (captureHotkey.error) log.warn(`[capture] ${captureHotkey.error}`);
+      // Pre-warm the capture slip so the hotkey shows it at once.
+      createCaptureWindow();
+      void openFileArguments(process.argv, process.cwd());
       // A deep link may have launched the very first instance (Windows).
       const deepLink = process.argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
       if (deepLink) handleDeepLink(deepLink);
     });
   });
 
-  app.on("before-quit", (event) => {
-    if (!isQuitting && localFiles && !localFiles.confirmQuit()) {
-      event.preventDefault();
-      return;
-    }
+  app.on("before-quit", () => {
     isQuitting = true;
     log.info("quitting");
     persistWindowState();
@@ -979,6 +1592,8 @@ if (!gotLock) {
   app.on("will-quit", () => {
     globalShortcut.unregisterAll();
     auth?.cancelPendingSignIn();
+    for (const run of runs.values()) run.cancel();
+    for (const entry of followers.values()) entry.follower.close();
   });
 
   app.on("window-all-closed", () => {
@@ -990,7 +1605,7 @@ if (!gotLock) {
   });
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
     else focusMainWindow();
   });
 }

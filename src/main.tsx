@@ -7,9 +7,11 @@ import { queryClient } from "@/lib/query-persist";
 import { desktopPlatform } from "./desktop/platform";
 import { DesktopAuthProvider } from "./desktop/desktop-auth-provider";
 import { installDesktopDiagnostics } from "./desktop/diagnostics";
+import { installFileDrop } from "./desktop/file-drop";
 import "./index.css";
 
 installDesktopDiagnostics();
+if (window.joty?.window === "main") installFileDrop(window.joty);
 
 // The desktop app shares the web app's IndexedDB-persisted query cache, so a
 // launch renders the last-known notes immediately instead of waiting on the

@@ -31,6 +31,13 @@ export default defineConfig([
       globals: globals.node,
     },
   },
+  // Preloads also run in the page (sandboxed renderer)
+  {
+    files: ['electron/*preload.cjs'],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
+    },
+  },
   // Build scripts (ESM, Node)
   {
     files: ['scripts/**/*.mjs'],
