@@ -1,13 +1,19 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const {
   SQL_SEPARATOR,
+  STALE_TEMP_MS,
   createSqlcmdParser,
   findPowerShell,
   parseConnectionString,
   powershellBootstrap,
+  shutdown,
   sqlcmdLaunch,
   startRun,
+  sweepTempFiles,
   tokenizeConnectionString,
 } = require("./run-blocks.cjs");
 
@@ -279,4 +285,146 @@ test("missing interpreters and bad requests become error events", async () => {
   assert.equal(events[1].type, "exit");
   events = await collect({ language: "python", code: "1" }, { powershell: null, sqlcmd: null });
   assert.match(events[0].message, /PowerShell and SQL/);
+});
+
+// ---------- temp .sql files ----------
+
+const sqlFiles = (dir) => fs.readdirSync(dir).filter((name) => name.endsWith(".sql"));
+const tempDir = (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "joty-run-test-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+};
+async function until(fn, what, timeout = 5000) {
+  const started = Date.now();
+  while (!fn()) {
+    if (Date.now() - started > timeout) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+function runCollect(req, exes, tmpDir) {
+  const events = [];
+  let cancel;
+  const done = new Promise((resolve) => {
+    cancel = startRun(
+      req,
+      (e) => {
+        events.push(e);
+        if (e.type === "exit") resolve(events);
+      },
+      { exes, tmpDir },
+    );
+  });
+  return { events, done, cancel };
+}
+
+/**
+ * A stand-in sqlcmd: prints the -i file (proof it existed), then optionally
+ * waits. The blank line releases the line the output parser holds back as a
+ * possible table header.
+ */
+function fakeSqlcmd(dir, { wait = false } = {}) {
+  const file = path.join(dir, "fake-sqlcmd.cmd");
+  fs.writeFileSync(
+    file,
+    [
+      "@echo off",
+      ":loop",
+      'if "%~1"=="" goto end',
+      'if "%~1"=="-i" (type "%~2" & echo. & goto end)',
+      "shift",
+      "goto loop",
+      ":end",
+      wait ? "ping -n 30 127.0.0.1 >nul" : "exit /b 0",
+      "",
+    ].join("\r\n"),
+  );
+  return file;
+}
+
+const windows = process.platform === "win32";
+const SQL_REQ = {
+  language: "sql",
+  code: "select 1 as one",
+  connectionString: "Server=x;Integrated Security=true",
+};
+
+test("a SQL run deletes its temp query file when it ends", { skip: !windows }, async (t) => {
+  const dir = tempDir(t);
+  const { events, done } = runCollect(SQL_REQ, { sqlcmd: fakeSqlcmd(dir) }, dir);
+  await done;
+  // The fake read the file, so it existed with the query in it.
+  assert.ok(
+    events.some((e) => e.type === "stdout" && e.text.includes("select 1 as one")),
+    JSON.stringify(events),
+  );
+  assert.equal(events.at(-1).code, 0);
+  await until(() => sqlFiles(dir).length === 0, "the temp file to go");
+});
+
+test("a SQL run that cannot start deletes its temp query file", async (t) => {
+  const dir = tempDir(t);
+  // `%` keeps cmd.exe out of it, so spawn itself fails (ENOENT).
+  const missing = path.join(dir, "no%such", "sqlcmd.exe");
+  const { events, done } = runCollect(SQL_REQ, { sqlcmd: missing }, dir);
+  await done;
+  assert.equal(events[0].type, "error");
+  assert.match(events[0].message, /Could not start/);
+  await until(() => sqlFiles(dir).length === 0, "the temp file to go");
+});
+
+test("cancelling right away leaves no temp query file", { skip: !windows }, async (t) => {
+  const dir = tempDir(t);
+  const exe = fakeSqlcmd(dir, { wait: true });
+  for (let i = 0; i < 5; i++) {
+    const { done, cancel } = runCollect(SQL_REQ, { sqlcmd: exe }, dir);
+    setTimeout(cancel, i * 3);
+    await done;
+  }
+  await until(() => sqlFiles(dir).length === 0, "the temp files to go");
+});
+
+test(
+  "quitting kills a running SQL run and deletes its file at once",
+  { skip: !windows },
+  async (t) => {
+    const dir = tempDir(t);
+    const { events, done } = runCollect(SQL_REQ, { sqlcmd: fakeSqlcmd(dir, { wait: true }) }, dir);
+    await until(() => events.some((e) => e.type === "stdout"), "the run to start", 10000);
+    const [file] = sqlFiles(dir);
+    assert.match(file, new RegExp(String.raw`^joty-run-${process.pid}-[0-9a-f-]{36}\.sql$`));
+    const started = Date.now();
+    shutdown();
+    assert.deepEqual(sqlFiles(dir), [], "deleted before shutdown() returns");
+    await done;
+    assert.ok(Date.now() - started < 10000, "the process tree was killed");
+  },
+);
+
+test("the startup sweep removes leftovers only", async (t) => {
+  const dir = tempDir(t);
+  const uuid = (n) => `0000000${n}-1111-4222-8333-444444444444`;
+  const now = Date.now();
+  const files = {
+    deadPid: `joty-run-4242-${uuid(1)}.sql`,
+    livePid: `joty-run-777-${uuid(2)}.sql`,
+    livePidOld: `joty-run-777-${uuid(3)}.sql`,
+    ownUntracked: `joty-run-${process.pid}-${uuid(4)}.sql`,
+    legacyOld: `joty-run-${uuid(5)}.sql`,
+    legacyNew: `joty-run-${uuid(6)}.sql`,
+    unrelated: "joty-run-notes.sql",
+    otherApp: `other-${uuid(7)}.sql`,
+  };
+  for (const name of Object.values(files)) fs.writeFileSync(path.join(dir, name), "select 1");
+  const old = new Date(now - STALE_TEMP_MS - 60000);
+  for (const key of ["livePidOld", "legacyOld"])
+    fs.utimesSync(path.join(dir, files[key]), old, old);
+
+  const removed = await sweepTempFiles({ tmpDir: dir, now, isAlive: (pid) => pid === 777 });
+  assert.equal(removed, 4);
+  assert.deepEqual(
+    fs.readdirSync(dir).sort(),
+    [files.livePid, files.legacyNew, files.unrelated, files.otherApp].sort(),
+  );
+  assert.equal(await sweepTempFiles({ tmpDir: path.join(dir, "missing") }), 0);
 });

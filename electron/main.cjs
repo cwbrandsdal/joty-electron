@@ -28,6 +28,12 @@ const {
 const { loadDesktopConfig } = require("./desktop-config.cjs");
 const { AuthManager } = require("./auth.cjs");
 const log = require("./log.cjs");
+const { composeDiagnostics, createRedactor } = require("./redact.cjs");
+const {
+  attachRendererLogging: attachRendererLogs,
+  logRendererMessage,
+} = require("./renderer-log.cjs");
+const { createPrivateCopier, createSecretClipboard } = require("./secret-clipboard.cjs");
 const {
   TEXT_EXTENSIONS,
   fileArguments,
@@ -112,6 +118,12 @@ let isQuitting = false;
 let settings = { ...DEFAULT_SETTINGS };
 let captureHotkey = { accelerator: null, error: null };
 let sealedStore = null;
+// Secret copies: kept out of clipboard history, cleared after a delay.
+const secretClipboard = createSecretClipboard({
+  clipboard,
+  privateCopy: createPrivateCopier({ BrowserWindow }),
+  log,
+});
 let appUpdateState = {
   phase: "unsupported",
   currentVersion: app.getVersion(),
@@ -246,7 +258,8 @@ function createAuthManager() {
       mainWindow?.loadURL(`${appBaseUrl()}${returnTo}`);
     },
     onStateChange: (state) => {
-      log.info(`[auth] state → ${state.status}${state.error ? ` (${state.error})` : ""}`);
+      // The error as its own argument: it is redacted on its own.
+      log.info(`[auth] state → ${state.status}`, ...(state.error ? ["error:", state.error] : []));
       broadcast("joty:auth-state", state);
     },
     logger: log,
@@ -779,27 +792,9 @@ function hideCapture() {
 
 // --- Diagnostics ---
 
-// Renderer warnings/errors and crashes go to the main log so a broken
-// install can be understood from one file. Electron ≥ 35 passes an event
-// object with details; older versions pass positional arguments.
-function attachRendererLogging(webContents, name) {
-  webContents.on("console-message", (event, ...legacy) => {
-    const level = event?.level ?? legacy[0];
-    const message = event?.message ?? legacy[1];
-    const source = event?.sourceId ?? legacy[3];
-    const isError = level === "error" || level === 3;
-    const isWarning = level === "warning" || level === 2;
-    if (!isError && !isWarning) return;
-    const text = `[renderer:${name}] ${message}${source ? ` (${source})` : ""}`;
-    if (isError) log.error(text);
-    else log.warn(text);
-  });
-  webContents.on("render-process-gone", (_event, details) => {
-    log.error(`[renderer:${name}] process gone: ${details.reason} (exit ${details.exitCode})`);
-  });
-  webContents.on("unresponsive", () => log.warn(`[renderer:${name}] unresponsive`));
-  webContents.on("responsive", () => log.info(`[renderer:${name}] responsive again`));
-}
+// Renderer console warnings/errors and crashes go to the main log
+// (renderer-log.cjs).
+const attachRendererLogging = (webContents, name) => attachRendererLogs(webContents, name, log);
 
 function diagnosticsReport() {
   const authState = auth?.getState() ?? { status: "unknown" };
@@ -826,11 +821,19 @@ function diagnosticsReport() {
       mainWindow && !mainWindow.isDestroyed() ? JSON.stringify(mainWindow.getBounds()) : "none"
     }`,
     `Update: ${appUpdateState.phase}${appUpdateState.error ? ` (${appUpdateState.error})` : ""}`,
-    "",
-    `--- last log lines (${log.file ?? "no log file"}) ---`,
-    log.tail(200),
   ];
-  return lines.join("\n");
+  // The error strings above (also read on their own) and the log lines (some
+  // possibly written by an older, unredacting version) go through the secret
+  // detector again; one redactor, so a value learned anywhere is replaced
+  // everywhere in the report.
+  const redactor = createRedactor();
+  return composeDiagnostics({
+    header: lines,
+    values: [authState.error, captureHotkey.error, appUpdateState.error],
+    logFile: log.file,
+    logTail: log.tail(200, redactor),
+    redactor,
+  });
 }
 
 // --- Spellcheck / editing context menu ---
@@ -1303,17 +1306,15 @@ function registerIpc() {
     mainWindow?.loadURL(`${appBaseUrl()}/`);
   });
 
-  handle("joty:log", [], (_event, level, message) => {
-    const text = `[renderer] ${String(message).slice(0, 2000)}`;
-    if (level === "error") log.error(text);
-    else if (level === "warn") log.warn(text);
-    else log.info(text);
-  });
+  handle("joty:log", [], (_event, level, message) => logRendererMessage(log, level, message));
   handle("joty:copy-diagnostics", [], () => {
     const report = diagnosticsReport();
     clipboard.writeText(report);
     return { ok: true, length: report.length, file: log.file };
   });
+  handle("joty:clipboard-write-secret", ["main"], (_event, text, clearAfterMs) =>
+    secretClipboard.writeSecret(text, clearAfterMs),
+  );
   handle("joty:open-external", [], (_event, url) => {
     let parsed;
     try {
@@ -1552,6 +1553,10 @@ if (!gotLock) {
     );
     settings = loadSettings();
     log.info("settings", settings);
+    // Query files that a crashed or killed run left in %TEMP%.
+    void runBlocks.sweepTempFiles().then((removed) => {
+      if (removed) log.info(`[run] removed ${removed} leftover temp query file(s)`);
+    });
     sealedStore = createSealedStore({
       file: path.join(app.getPath("userData"), "joty-sealed.bin"),
       safeStorage,
@@ -1573,7 +1578,7 @@ if (!gotLock) {
     return createWindow().then(() => {
       applySettings();
       registerCaptureHotkey(settings.quickCaptureShortcut);
-      if (captureHotkey.error) log.warn(`[capture] ${captureHotkey.error}`);
+      if (captureHotkey.error) log.warn("[capture]", captureHotkey.error);
       // Pre-warm the capture slip so the hotkey shows it at once.
       createCaptureWindow();
       void openFileArguments(process.argv, process.cwd());
@@ -1593,6 +1598,10 @@ if (!gotLock) {
     globalShortcut.unregisterAll();
     auth?.cancelPendingSignIn();
     for (const run of runs.values()) run.cancel();
+    // Kill SQL runs and delete their temp query files before exiting.
+    runBlocks.shutdown();
+    // A copied secret does not outlive the app.
+    secretClipboard.flush();
     for (const entry of followers.values()) entry.follower.close();
   });
 

@@ -117,6 +117,11 @@ const api = {
     write: (payload) => invoke("joty:sealed-write", payload),
   },
 
+  // --- Clipboard for secrets (kept out of clipboard history, cleared later) ---
+  clipboard: {
+    writeSecret: (text, clearAfterMs) => invoke("joty:clipboard-write-secret", text, clearAfterMs),
+  },
+
   // --- Frameless window chrome ---
   windowChrome: {
     /** Width of the native caption buttons in DIPs (the fallback when WCO is absent). */

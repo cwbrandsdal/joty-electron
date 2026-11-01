@@ -71,6 +71,13 @@ export interface DiagnosticsResult {
   file: string | null;
 }
 
+export interface SecretCopyResult {
+  /** Windows got CanIncludeInClipboardHistory = 0 and CanUploadToCloudClipboard = 0. */
+  historyExcluded: boolean;
+  /** The delay actually used (clamped to 1 s – 10 min). */
+  clearAfterMs: number;
+}
+
 export interface DesktopPrefsState extends DesktopPrefs {
   /** Why the capture hotkey is not registered (taken by another app), or null. */
   captureHotkeyError: string | null;
@@ -103,6 +110,10 @@ export interface JotyApi {
     ) => () => void;
   };
   sealed: { read: () => Promise<string | null>; write: (payload: string) => Promise<void> };
+  /** Main window only. */
+  clipboard: {
+    writeSecret: (text: string, clearAfterMs: number) => Promise<SecretCopyResult>;
+  };
   windowChrome: {
     /** Native caption buttons width in DIPs; 0 in windows without them. */
     controlsWidth: number;

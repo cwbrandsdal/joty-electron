@@ -8,3 +8,4 @@ release/
 .env.production
 .env.*.local
 electron/desktop-config.json
+electron/generated/

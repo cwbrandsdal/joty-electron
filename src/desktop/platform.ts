@@ -42,10 +42,21 @@ function updates(bridge: JotyApi): NonNullable<Platform["updates"]> {
 }
 
 /**
+ * Platform["clipboard"] in joty-web (added with the secrets work). Declared
+ * here too so this shell type-checks against a web tree with or without it.
+ */
+interface SecretClipboard {
+  /** Copy a secret; the clipboard is cleared after `clearAfterMs` if it still holds it. */
+  writeSecret(text: string, clearAfterMs: number): Promise<void>;
+}
+
+type DesktopPlatform = Platform & { clipboard?: SecretClipboard };
+
+/**
  * The desktop Platform. The main window gets everything; the capture slip
  * only what a slip needs (the main process refuses the rest from it anyway).
  */
-function createDesktopPlatform(): Platform {
+function createDesktopPlatform(): DesktopPlatform {
   const bridge = window.joty;
   if (!bridge) return { name: "desktop" };
 
@@ -84,6 +95,11 @@ function createDesktopPlatform(): Platform {
       read: () => bridge.sealed.read(),
       write: (payload) => bridge.sealed.write(payload),
     },
+    clipboard: {
+      writeSecret: async (text: string, clearAfterMs: number) => {
+        await bridge.clipboard.writeSecret(text, clearAfterMs);
+      },
+    },
     windowChrome: createWindowChrome(bridge),
     updates: updates(bridge),
     onMenuAction: (handler) => bridge.onMenuAction(handler),
@@ -92,4 +108,4 @@ function createDesktopPlatform(): Platform {
   };
 }
 
-export const desktopPlatform: Platform = createDesktopPlatform();
+export const desktopPlatform: DesktopPlatform = createDesktopPlatform();

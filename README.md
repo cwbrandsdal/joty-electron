@@ -84,10 +84,13 @@ answers, and quick capture works offline.
 - **Log file**: the main process writes `%APPDATA%\joty-electron\logs\joty-main.log` (rotated at
   1 MB, three generations): startup, settings, auth state transitions (never tokens), sync
   failures reported by the renderer, renderer console errors, crashes and updater events. Run
-  blocks, file contents, OCR text and connection strings are never logged.
+  blocks, file contents, OCR text and connection strings are never logged. As a backstop every
+  entry is redacted before it is written or mirrored to the console (see
+  [Secrets in logs, diagnostics and the clipboard](#secrets-in-logs-diagnostics-and-the-clipboard)).
 - **Copy diagnostics** puts a report on the clipboard: versions, OS and Mica support, displays,
   window bounds, settings, capture hotkey status, sign-in state, sealed-store and run-block
-  availability, update state and the last 200 log lines. No note content is included.
+  availability, update state and the last 200 log lines. No note content is included, and the
+  whole report is redacted again, log lines from older versions included.
 - `npm run lint` also runs `scripts/check-shared-deps.mjs`, which fails when the shared runtime
   packages differ from joty-web's installed versions. `tsconfig.app.json` maps `react` and
   `react-dom` types to this project's copy (the TypeScript counterpart of Vite's `dedupe`).
@@ -160,6 +163,81 @@ user's rights:
   to stderr. Runs stop after 5 minutes.
 - Output streams line by line; cancel kills the process tree (`taskkill /T /F`). Output over
   32 MB stops the run; tables show at most 10,000 rows.
+- **The query file**: sqlcmd reads the query from a file, so a SQL run writes it in plaintext to
+  `%TEMP%\joty-run-<pid>-<uuid>.sql` (UTF-8 with BOM, exclusive create). It is deleted when the
+  run ends on every path (exit, failure, a spawn that fails, cancel, the 5-minute limit, a
+  cancel while it is still being written), synchronously at quit after sqlcmd is killed, on
+  process exit, and at the next start for any a crash left behind (files of processes that are
+  gone, or older than 10 minutes; another running Joty's files are left alone).
+- **The password stays in `SQLCMDPASSWORD`**, on purpose. A command line is readable by every
+  process of the user and lands in process-creation auditing (event 4688, EDR); a process's
+  environment needs rights to open and read that process. sqlcmd takes a password only from
+  `-P`, `SQLCMDPASSWORD` or an interactive console prompt, so the environment is the narrowest
+  channel it offers. It is set only in the sqlcmd child's environment (and inherited by anything
+  that sqlcmd starts), never in Joty's own.
+
+## Secrets in Logs, Diagnostics and the Clipboard
+
+The desktop side of phase 1 ("stop the leaks") of the secrets design (joty-work
+`design/06-secrets.md`):
+
+- **One detector.** `scripts/build-secrets.mjs` bundles joty-web's
+  `src/joty/engine/secrets.ts` with esbuild into `electron/generated/secrets.cjs` (generated,
+  gitignored, packaged with `electron/**`). It runs in `npm run build` and before `npm test`,
+  `npm start`, `npm run dev` and `npm run test:smoke` (or `npm run build:secrets`), so the main
+  process always uses the detection the editor uses, never a copied list of patterns.
+- **Redacted logs.** `electron/redact.cjs` replaces every detected value with `⟦secret⟧`. Every
+  log entry (strings, JSON-serialized objects, Error stacks, renderer `joty.log` calls, renderer
+  console warnings and errors with their source URL, window errors, OCR failures) is redacted
+  before it reaches the file or the console.
+  - _Raw pieces first._ Each logging argument, renderer console message, `joty.log` message and
+    Error message (with its `cause` chain, logged as `Caused by:`) is read on its own before tags
+    such as `[renderer:main]`, source URLs and timestamps are added, so a value recognized only
+    on a line of its own (a pasted password) is still found. Leading `[tag]`s, a trailing
+    `(source)` and the last word of a line are also read on their own. Every value learned this
+    way is then replaced wherever it appears in the entry: 8+ characters anywhere, a shorter one
+    wherever it stands as a whole token (not next to `[A-Za-z0-9_]`), as the web and API
+    redactors do. Pass raw values as their own arguments (`log.warn("[x] failed:", error.message)`),
+    not inside a template string.
+  - _Structured values, value by value._ Before an object argument is written as JSON, every
+    string inside it is read on its own: keys, array items, Map and Set entries, an Error's
+    message, `cause` and other properties (16 levels deep and 50,000 parts per entry at most;
+    a larger value is written `⟦value withheld: too large or unreadable⟧`, deeper parts
+    `⟦omitted⟧`, cycles `⟦circular⟧`). JSON found in text (a logged response body, JSON inside
+    a JSON string) is parsed and read the same way, then rewritten with its strings redacted. A
+    line holding JSON that cannot be parsed (cut off, say) is withheld as
+    `⟦structured line withheld⟧`.
+  - _Whole lines, then the cut._ Detection always reads complete lines. A line over 4,096
+    characters (the detector has quadratic postprocessing) is withheld whole as
+    `⟦long line withheld, N chars⟧`, never scanned as a prefix. Text is shortened only after
+    redaction: entries to 32 KB, `joty.log` messages to 2,000 characters (lines beginning within
+    16 KB are read for values first), OCR errors to 300. Lines beginning past those bounds are
+    dropped unread. So a cut can never leave the start of, say, a quoted password with spaces.
+  - Without the generated detector (a source checkout that skipped the build step) log text is
+    withheld, not written unchecked.
+- **Redacted diagnostics.** Copy diagnostics redacts its header (auth, update and hotkey errors,
+  also read on their own; settings) and the last 200 log lines again, which covers lines an older
+  version wrote raw: the timestamp and level, `[renderer:…]`/`[tag]` prefixes and the renderer
+  source suffix are set aside for detection, the JSON objects old lines hold are parsed and read
+  value by value (a line whose JSON cannot be parsed is withheld), and a value learned anywhere
+  in the report is replaced everywhere in it. Over-long old lines are withheld whole.
+- **Copying a secret** (`platform.clipboard.writeSecret(text, clearAfterMs)`, main window only;
+  `electron/secret-clipboard.cjs`). The text is put on the clipboard, and after `clearAfterMs`
+  (clamped to 1 s – 10 min) the clipboard is cleared only if it still holds exactly that text
+  (compared by SHA-256, line endings normalized; the text itself is not kept). A newer secret
+  takes over the pending clear, and quitting clears at once. Kept out of Windows clipboard
+  history:
+  - `clipboard.writeBuffer()` empties the clipboard before writing its one format, so Electron
+    cannot add `CanIncludeInClipboardHistory` next to text (tested on Electron 43).
+  - Chromium marks copies made in an off-the-record profile itself, and an Electron session
+    without `persist:` is one. So the copy runs in a hidden page on the in-memory partition
+    `joty-secret-clipboard` (created for the copy, about 60 ms, then destroyed). Windows then gets
+    `CanIncludeInClipboardHistory` = 0 and `CanUploadToCloudClipboard` = 0 with the text: no
+    clipboard history entry (Win+V), no cloud clipboard sync. The smoke test checks both.
+  - `ExcludeClipboardContentFromMonitorProcessing`, which some third-party clipboard managers
+    honour, is only written for Chromium's own password manager and cannot be set here.
+  - If the private copy fails, the text is written with `clipboard.writeText()` (no history
+    exclusion; a warning without the value is logged) and is still cleared on time.
 
 ## Sealed Sheets, Capture and Screen Clips
 
@@ -205,13 +283,19 @@ with the shared API client.
 ## Verification
 
 - `npm test` — unit tests for encodings, line endings, atomic writes, large files, file
-  following, connection strings, sqlcmd output parsing, PowerShell runs and cancel, the sealed
-  store, and colour handling.
-- `npm run test:smoke` (after `npx vite build`) — launches the real shell with the built
+  following, connection strings, sqlcmd output parsing, PowerShell runs and cancel, temp query
+  file cleanup (end, spawn failure, cancel, quit, startup sweep), log and diagnostics redaction,
+  the secret clipboard's clear logic, the sealed store, and colour handling.
+- `npm run test:smoke` (after `npm run build`) — launches the real shell with the built
   renderer, a throwaway profile and a fake account through the sibling joty-web Playwright, and
-  exercises every bridge capability, the capture slip, OCR and the signed-in app. Set
-  `JOTY_SMOKE_SQL` to a connection string to include a SQL run, and `JOTY_SMOKE_CLIP=1` to
-  include an automated screen clip. Remove `ELECTRON_RUN_AS_NODE` from the environment first.
+  exercises every bridge capability, the capture slip, OCR and the signed-in app, including log
+  and diagnostics redaction and the secret clipboard (history formats and the timed clear). Set
+  `JOTY_SMOKE_SQL` to a connection string to include a SQL run (for example
+  `Server=(localdb)\MSSQLLocalDB;Trusted_Connection=Yes`), and `JOTY_SMOKE_CLIP=1` to
+  include an automated screen clip. `JOTY_SMOKE_CLIPBOARD=mock` leaves the system clipboard
+  alone: the main process gets an in-memory clipboard (Copy diagnostics is still checked) and the
+  secret-clipboard check, which needs the real one, is skipped. Remove `ELECTRON_RUN_AS_NODE`
+  from the environment first.
 
 ## WorkOS Redirect URIs
 
