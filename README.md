@@ -78,112 +78,140 @@ answers, and quick capture works offline.
 
 ## Defaults & Diagnostics
 
-- **Defaults** suit an app that stays open for weeks: minimize-to-tray, launch at login and
-  automatic update downloads are on unless you turn them off in Settings → Desktop. Existing
-  installs keep whatever they had chosen.
+- **Defaults** suit an app that stays open for weeks: minimize-to-tray, launch at login (started
+  hidden in the tray) and automatic update downloads are on unless turned off in the Desktop
+  group of `settings.joty`. Existing installs keep whatever they had chosen.
 - **Log file**: the main process writes `%APPDATA%\joty-electron\logs\joty-main.log` (rotated at
   1 MB, three generations): startup, settings, auth state transitions (never tokens), sync
-  failures reported by the renderer, renderer console errors, crashes and updater events.
-- **Copy diagnostics** (Settings → Desktop) puts a report on the clipboard: versions, OS,
-  displays, window bounds, settings, sign-in state, update state and the last 200 log lines.
-  No note content is included. Paste it when reporting a problem.
+  failures reported by the renderer, renderer console errors, crashes and updater events. Run
+  blocks, file contents, OCR text and connection strings are never logged.
+- **Copy diagnostics** puts a report on the clipboard: versions, OS and Mica support, displays,
+  window bounds, settings, capture hotkey status, sign-in state, sealed-store and run-block
+  availability, update state and the last 200 log lines. No note content is included.
 - `npm run lint` also runs `scripts/check-shared-deps.mjs`, which fails when the shared runtime
-  packages differ from joty-web's installed versions.
+  packages differ from joty-web's installed versions. `tsconfig.app.json` maps `react` and
+  `react-dom` types to this project's copy (the TypeScript counterpart of Vite's `dedupe`).
 
-## Keyboard Shortcuts (native menu)
+## Window and Keyboard
 
-| Shortcut                      | Action                                         |
-| ----------------------------- | ---------------------------------------------- |
-| `Ctrl+K`                      | Quick open (command palette)                   |
-| `Ctrl+N`                      | New note                                       |
-| `Ctrl+O`                      | Open a file from your computer                 |
-| `Ctrl+S`                      | Save the local file to its original path       |
-| `Ctrl+W`                      | Close tab                                      |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab                            |
-| `Ctrl+P`                      | Pin/unpin current note                         |
-| `Ctrl+E`                      | Cycle preview pane: auto / split / editor only |
-| `Ctrl+Shift+E`                | Export current note as PDF                     |
-| `Ctrl+Shift+J`                | Quick capture (global, configurable)           |
-| `Ctrl+,`                      | Settings                                       |
-| `Ctrl+Shift+F` or `/`         | Focus sidebar search (all notes)               |
-| `Ctrl+F`                      | Find in the current note (editor)              |
+The main window is frameless (`titleBarStyle: "hidden"` with a 48 px `titleBarOverlay`): the web
+app's bar is the title bar and drag region, and Windows draws its own caption buttons (Snap
+layouts, double-click to maximize) at the right. The web app reports skin changes through
+`platform.windowChrome.setColors()` / `setMaterial()`; the caption buttons follow, and the
+Vellum skin turns on Windows 11 Mica (22H2+; falls back to the skin colour elsewhere). The last
+colours are remembered so the next launch paints the right colours before the page loads.
 
-Editor shortcuts (inside the note body): `Ctrl+B` bold · `Ctrl+I` italic · `` Ctrl+` `` inline code ·
-`Ctrl+Shift+K` link · `Ctrl+1/2/3` heading level, `Ctrl+0` clear · `Ctrl+Shift+X` toggle task ·
-`Ctrl+Shift+L` toggle bullet · typing `*`, `_`, `` ` `` or `~` with a selection wraps it · Enter
-continues lists. Tabs: a single click opens a note in a reusable preview tab (italic) so browsing
-doesn't pile up tabs — edit, double-click, pin, or "Keep open" makes it permanent; drag to reorder,
-right-click to pin, middle-click to close, `Alt+←/→` moves the focused tab. Editor font, size, line width, typewriter and focus modes live in
-Settings → Editor.
+There is no application menu: the web app owns its shortcuts (`Ctrl+K`, `Ctrl+N`, `Ctrl+W`,
+`Ctrl+Tab`, `Ctrl+S`, `Ctrl+O`, `Alt+1…5`…; see the concept's keyboard table). The shell keeps
+only:
 
-The menu bar is hidden by default — press `Alt` to reveal it. Accelerators work while it is hidden.
+| Shortcut                       | Action                                                      |
+| ------------------------------ | ----------------------------------------------------------- |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Zoom in / out / reset (remembered; the caption bar follows) |
+| `Ctrl+Shift+I`                 | DevTools, when running from source                          |
+| `Ctrl+Shift+J` (configurable)  | Capture slip from any app (global)                          |
 
-## Files From Your Computer
+While Joty's own window is focused, `Ctrl+Shift+J` goes to the web app (its in-app capture).
+If another app already holds the capture hotkey, `desktopPrefs.get()` reports
+`captureHotkeyError` and the tray's **Capture** still works.
 
-Use **Open file** in the toolbar or command palette, or **File → Open File… / Ctrl+O**.
-Text and Markdown files open alongside notes in the existing tab strip. Local-file tabs have a
-subtle blue tint, a file icon, the full path on hover, and a dot for unsaved changes. The editor
-is labeled **Local file · Not saved in Joty**. Local editing works without an account or network.
-The same **Auto / Split / Editor** preview controls used for notes are available for files
-(`Ctrl+E` cycles modes). Auto previews `.md`/`.markdown` files and detects Markdown in other
-text files. The live preview supports a resizable divider and task checkboxes; checking a task
-edits the local draft and still requires Ctrl+S to save it to disk.
-**Save file / Ctrl+S** writes to the original path; local files do not autosave or enter Joty's
-notes cache, sync queue, or AI features. Drafts and undo history survive tab switching. Closing,
-reloading or quitting with edits prompts first, including files in background tabs. Canceling a
-bulk close retains all selected tabs; any files already saved during those prompts stay saved.
+## File Sheets
 
-The Windows installer registers Joty as an **Open with** choice for `.txt`, `.log`, `.md`, and
-`.markdown`. Choose Joty in Windows **Open with → Choose another app**; select **Always** if you
-want it as the default. Opening a file again focuses its existing tab. Command-line file
-paths are supported both at startup and while Joty is running.
+Files open as file sheets in the web app: from **Open with**, the command line (first launch or
+while running), a second instance, the open dialog (`platform.files.pick()`), or by dropping
+them on the window. Dropped files open only when they are text (known text extensions open
+straight away, unknown ones are sniffed for binary content); other drops go to the page.
 
-**Copy into Joty** creates a normal note from the current text, including unsaved edits, using
-the filename as its title. It requires sign-in and an online connection. The original file stays
-on disk; subsequent changes to either copy are independent. **Open Joty copy** opens the note.
+- **Encodings**: UTF-8 (with or without BOM), UTF-16 LE/BE with BOM, and Windows-1252 when the
+  bytes are not valid UTF-8. Text reaches the page with `\n` line endings; the file's ending
+  (`LF`, `CRLF`, `CR`, by majority) and encoding are reported, and writes restore both, BOM
+  included. Windows-1252 refuses characters it cannot hold instead of replacing them.
+- **Writes** are atomic: a temp file in the same folder, fsync, rename over the original (retried
+  while antivirus or indexers hold the file). On failure the original is untouched.
+- **Large files**: over 50 MB only the last ~5 MB is loaded, read-only, starting at a line.
+- **Following**: `files.watch()` sends appended text as `append`, truncation, rotation and
+  rewrites as `replace`, and deletion as `removed`. The parent folder is watched and a 1 s stat
+  poll catches what Windows' watcher misses. Joty's own writes do not echo back.
+- `files.recent()` keeps the last 20 opened or written paths (`joty-recent.json`).
 
-Supported files are UTF-8 or BOM-marked UTF-16 text up to 5 MB. Saves preserve the encoding/BOM
-and predominant line ending (mixed endings are normalized when edited). Binary/legacy-encoded
-files are rejected. Joty notes have a separate limit of 1,000,000 characters. If another program
-changes the file, saving refuses to overwrite it: preserve your draft with **Copy into Joty** or
-copy/paste, then **Reload** the disk version. Unsaved local drafts live in memory and are not
-recovered after a crash.
+The installer registers Joty under **Open with** for `.txt .log .md .markdown .json .jsonc .csv
+.tsv .xml .yml .yaml .ini .conf .cfg .env .ps1 .psm1 .sql .cs .ts .js .py .sh .bat .cmd`
+without becoming the default app for any of them: `build/installer.nsh` writes only the
+`Joty.TextFile` ProgID, each extension's `OpenWithProgids` entry and `Applications\Joty.exe`.
+electron-builder's `fileAssociations` is deliberately not used, because its NSIS macro sets each
+extension's default class. Uninstalling removes only Joty's entries; the install also clears
+defaults that Joty 1.x set for `.txt .log .md .markdown`.
 
-Implementation: `electron/local-files.cjs` handles encoding and atomic file replacement;
-`electron/local-file-sessions.cjs` owns each path and draft in the main process. File IPC is
-restricted to the main window's trusted top-level app frame and main-issued session IDs.
-The renderer cannot supply arbitrary paths to read or write. Local file paths and tabs are not
-persisted with cloud-note tabs; reopen files after restarting the app.
+## Run Blocks
 
-Verification: run `npm test` for disk round-trip and failure cases. After `npm run build`, run
-`npm run test:local-files` with Node 22.18+ and the sibling joty-web dependencies installed. This
-launches the real Electron shell with an isolated temporary profile, fake authentication/API,
-and controlled dialog responses; it checks mixed tabs, draft/undo retention, disk saving,
-copying, conflicts, IPC authorization and bulk-close/quit protection. It never uses the signed-in profile or real notes. The output includes a
-temporary screenshot path. Windows Explorer association selection is a manual installed-build check.
+`platform.run` runs a sheet's PowerShell or SQL block on an explicit Run, with the Windows
+user's rights:
 
-## Desktop Features
+- **PowerShell**: `pwsh.exe` (PATH, Program Files, the Store alias), else Windows PowerShell 5.1,
+  with `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -`. The code goes
+  through stdin as one line (base64), output is UTF-8, and the exit code is the script's.
+- **SQL**: `sqlcmd` (PATH, the ODBC and SQL Server tool folders, Go sqlcmd). The connection
+  string (`Server`/`Data Source`, `Database`/`Initial Catalog`, `User Id`/`UID`,
+  `Password`/`PWD`, `Integrated Security`/`Trusted_Connection`, `Encrypt`,
+  `TrustServerCertificate`, `Connect Timeout`) is parsed in the main process. ODBC sqlcmd runs
+  under `cmd /c chcp 65001` (it otherwise writes piped output in the OEM code page); every
+  connection value, the password included, travels in `SQLCMD*` environment variables, never on
+  the command line. Result sets become `table` events, PRINT and row counts are text, errors go
+  to stderr. Runs stop after 5 minutes.
+- Output streams line by line; cancel kills the process tree (`taskkill /T /F`). Output over
+  32 MB stops the run; tables show at most 10,000 rows.
 
-Beyond wrapping the web app, the desktop shell adds:
+## Sealed Sheets, Capture and Screen Clips
 
-- **System tray** — Open, New Note, Quick Capture, Check for Updates, Quit; optional
-  minimize-to-tray (keeps Joty running when the window is closed).
-- **Quick capture** — a global hotkey opens a small always-on-top scratch window that posts a
-  note to your account and dismisses itself.
-- **Deep links** — `joty://note/<id>` and `joty://new` focus the app and open/create a note.
-- **Window state** — size, position, and maximized state are remembered across launches.
-- **Launch at login**, **zoom persistence**, and **automatic update downloads** — all toggleable
-  in Settings → Desktop.
+- **Sealed sheets** (`platform.sealed`) are one payload encrypted with `safeStorage` (DPAPI) in
+  `joty-sealed.bin` under userData, written atomically with the previous file kept as
+  `.bak`. Without OS encryption, reads and writes fail; there is no plaintext fallback.
+- **Capture slip**: a hidden, transparent, always-on-top window is created at startup with the
+  renderer at `?capture=1`. The hotkey places it (760 × 360) at the top of the display under
+  the cursor, focuses it and sends `joty:capture-show`; it hides on blur, Esc and after a jot
+  (`window.joty.capture.done()`), and is reused, never reloaded.
+- **Screen clip** (`platform.screenClip()`): Joty's windows hide, the display under the cursor is
+  captured, and a full-screen overlay lets you drag a region (Esc or right-click cancels). The
+  crop comes back as PNG with OCR text.
+- **OCR** (`platform.ocr()`): Windows' built-in engine through `electron/ocr-win.ps1` in Windows
+  PowerShell 5.1 (shipped as a resource). Returns an empty string when no OCR language is
+  installed or policy blocks it.
+
+## Other Desktop Features
+
+- **System tray** — Open, New Sheet, Capture, Check for Updates, Quit; minimize-to-tray keeps
+  Joty (and the capture hotkey) running when the window is closed.
+- **Deep links** — `joty://note/<id>`, `joty://new` and `joty://capture`.
+- **Window state** — size, position and maximized state are remembered; positions on a monitor
+  that is gone are dropped.
+- **Updates** — electron-updater, exposed as `platform.updates` (`progress` is 0–100). Install
+  downloads first when automatic downloads are off.
 - **Spellcheck** — right-click a misspelling for suggestions and add-to-dictionary.
-- **Print / export to PDF** — the current note's rendered preview, via the OS save dialog.
+- **Print / export to PDF** — `window.joty.printNoteToPdf()`.
 
 Native preferences are stored in `joty-settings.json` / `joty-window.json` under the app's
 `userData` directory.
 
+`src/desktop/platform.ts` builds the `Platform` object the web app consumes from the
+`window.joty` bridge (`electron/preload.cjs`, typed in `src/desktop/electron-api.ts`). The main
+window gets every capability; the capture window only version, screen clip, OCR, preferences,
+links and diagnostics. The bridge is exposed only to Joty's own origins, and the main process
+checks every request's sender (window and top-level frame) and arguments again.
+
 The shared UI consumes the shell-neutral `JotyAuthProvider` contract. Electron's
-`DesktopAuthProvider` adapts the WorkOS SDK to that contract and registers its
-access-token provider with the shared API client. This preserves bearer-token
-authentication for desktop while the website uses the API's HttpOnly BFF session.
+`DesktopAuthProvider` mirrors the main-process session and registers its access-token provider
+with the shared API client.
+
+## Verification
+
+- `npm test` — unit tests for encodings, line endings, atomic writes, large files, file
+  following, connection strings, sqlcmd output parsing, PowerShell runs and cancel, the sealed
+  store, and colour handling.
+- `npm run test:smoke` (after `npx vite build`) — launches the real shell with the built
+  renderer, a throwaway profile and a fake account through the sibling joty-web Playwright, and
+  exercises every bridge capability, the capture slip, OCR and the signed-in app. Set
+  `JOTY_SMOKE_SQL` to a connection string to include a SQL run, and `JOTY_SMOKE_CLIP=1` to
+  include an automated screen clip. Remove `ELECTRON_RUN_AS_NODE` from the environment first.
 
 ## WorkOS Redirect URIs
 
