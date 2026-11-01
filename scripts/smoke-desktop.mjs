@@ -52,6 +52,74 @@ async function until(fn, what, timeout = 10000) {
   }
 }
 
+/**
+ * What Windows does with a press at each page point (CSS px) of the main
+ * window, asked of the window itself (WM_NCHITTEST), so the mouse never moves:
+ * 1 the page gets it, 2 it moves the window, 8/9/20 the caption buttons.
+ */
+const hitScript = path.join(temporary, "hit-test.ps1");
+await writeFile(
+  hitScript,
+  [
+    "param([string]$hwnd, [string]$points)",
+    `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class JotyHit { [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l); [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c); }'`,
+    // Physical pixels, as Electron's: an unaware caller gets scaled coordinates.
+    "[void][JotyHit]::SetProcessDpiAwarenessContext([IntPtr]::new(-4))",
+    "$h = [IntPtr]::new([long]$hwnd)",
+    "foreach ($p in $points -split ';') {",
+    "  $x, $y = $p -split ','",
+    "  $l = (([int]$y -band 0xFFFF) -shl 16) -bor ([int]$x -band 0xFFFF)",
+    "  [JotyHit]::SendMessage($h, 0x84, [IntPtr]::Zero, [IntPtr][long]$l).ToInt64()",
+    "}",
+  ].join("\r\n"),
+);
+async function hitTest(app, points) {
+  const { geo, hwnd, screenPoints } = await app.evaluate(({ BrowserWindow, screen }, pts) => {
+    const w = BrowserWindow.getAllWindows().find(
+      (x) => !x.webContents.getURL().includes("capture=1"),
+    );
+    const c = w.getContentBounds();
+    const zoom = w.webContents.getZoomFactor();
+    return {
+      geo: {
+        bounds: w.getBounds(),
+        content: c,
+        zoom,
+        display: screen.getDisplayMatching(w.getBounds()).scaleFactor,
+        displays: screen.getAllDisplays().map((d) => [d.bounds, d.scaleFactor]),
+      },
+      hwnd: w.getNativeWindowHandle().readBigUInt64LE(0).toString(),
+      screenPoints: pts.map((p) =>
+        screen.dipToScreenPoint({
+          x: Math.round(c.x + p.x * zoom),
+          y: Math.round(c.y + p.y * zoom),
+        }),
+      ),
+    };
+  }, points);
+  const ps = spawn(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      hitScript,
+      hwnd,
+      screenPoints.map((p) => `${p.x},${p.y}`).join(";"),
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let out = "";
+  let err = "";
+  ps.stdout.on("data", (d) => (out += d));
+  ps.stderr.on("data", (d) => (err += d));
+  const code = await new Promise((resolve) => ps.on("exit", resolve));
+  assert(code === 0, `hit test exited ${code}: ${err.trim().slice(0, 300)}`);
+  hitTest.last = JSON.stringify({ window: geo, screenPoints });
+  return out.trim().split(/\s+/).map(Number);
+}
+
 const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const argFile = path.join(temporary, "from argv.md");
 const logFile = path.join(temporary, "app.log");
@@ -779,6 +847,111 @@ async function launch({ signedIn, args = [] }) {
         15000,
       );
       if (shots) await main.screenshot({ path: path.join(shots, "desktop-file-sheet.png") });
+    });
+
+    await check("signed in: the whole bar moves the window, its controls take clicks", async () => {
+      const points = await main.evaluate(() => {
+        const at = (sel, where = "mid") => {
+          const r = document.querySelector(sel).getBoundingClientRect();
+          const x =
+            where === "left" ? r.left + 3 : where === "right" ? r.right - 3 : r.left + r.width / 2;
+          return { x, y: r.top + r.height / 2 };
+        };
+        const bar = document.querySelector(".j-bar").getBoundingClientRect();
+        return {
+          drag: [
+            at(".j-wordmark"),
+            at(".j-kind"),
+            at(".j-bar__sheet", "right"),
+            at(".j-lenses", "left"),
+            at(".j-bar__tools", "right"),
+          ],
+          click: [
+            at('.j-bar [aria-label="New draft"]'),
+            at(".j-title"),
+            at(".j-lens"),
+            at('.j-bar [aria-label="Settings"]'),
+            { x: bar.left + bar.width / 2, y: bar.bottom + 60 },
+          ],
+          caption: [{ x: window.innerWidth - 20, y: bar.top + bar.height / 2 }],
+        };
+      });
+      const all = [...points.drag, ...points.click, ...points.caption];
+      const hits = await hitTest(app, all);
+      const drag = hits.slice(0, points.drag.length);
+      const click = hits.slice(points.drag.length, points.drag.length + points.click.length);
+      const caption = hits.at(-1);
+      const where = () => `${JSON.stringify(points)} ${hitTest.last}`;
+      assert(
+        drag.every((h) => h === 2),
+        `bar paper: ${drag}, expected all 2; ${where()}`,
+      );
+      assert(
+        click.every((h) => h === 1),
+        `controls and page: ${click}, expected all 1; ${where()}`,
+      );
+      assert(caption === 20, `close button: ${caption}, expected 20; ${where()}`);
+
+      // The Desk lies over the bar: its header moves the window and its
+      // buttons take clicks from the first frame (Electron keeps drag areas
+      // measured then), the table takes clicks, and the back button is clear
+      // of the caption buttons.
+      await main.evaluate(() =>
+        document.querySelector('.j-bar [aria-label="Zoom out to the Desk"]').click(),
+      );
+      await until(() => main.evaluate(() => !!document.querySelector(".j-desk")), "the Desk");
+      const desk = await main.evaluate(() => {
+        const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+        const mid = (b) => ({ x: b.left + b.width / 2, y: b.top + b.height / 2 });
+        const head = r(".j-desk__bar");
+        const back = r(".j-desk__back");
+        return {
+          points: [
+            mid(r(".j-desk__bar b")),
+            mid(r(".j-desk__grow")),
+            mid(r(".j-desk__tidy")),
+            mid(r('.j-desk__zoom [aria-label="Zoom in"]')),
+            mid(back),
+            { x: head.left + head.width / 2, y: head.bottom + 60 },
+          ],
+          backRight: window.innerWidth - back.right,
+          captionW: window.joty.windowChrome.controlsWidth,
+        };
+      });
+      const deskHits = (await hitTest(app, desk.points)).join(",");
+      await main.keyboard.press("Escape");
+      assert(
+        deskHits === "2,2,1,1,1,1",
+        `Desk title, gap, tidy, zoom, back, table: ${deskHits}, expected 2,2,1,1,1,1; ${hitTest.last}`,
+      );
+      assert(
+        desk.backRight >= desk.captionW,
+        `the Desk's back button ends ${desk.backRight}px from the edge, under the ${desk.captionW}px caption`,
+      );
+
+      // The capture slip over the bar takes clicks; closed, the bar moves the window again.
+      await until(
+        () => main.evaluate(() => !document.querySelector(".j-desk")),
+        "the Desk to close",
+      );
+      await main.keyboard.press("Control+k");
+      await main.keyboard.type(">capture");
+      await main.keyboard.press("Enter");
+      await until(
+        () => main.evaluate(() => !!document.querySelector(".j-capture--overlay")),
+        "the capture slip",
+      );
+      const strip = points.drag.slice(0, 3);
+      const under = (await hitTest(app, strip)).join(",");
+      await main.keyboard.press("Escape");
+      await until(
+        () => main.evaluate(() => !document.querySelector(".j-capture")),
+        "the slip to go",
+      );
+      const after = (await hitTest(app, strip)).join(",");
+      assert(under === "1,1,1", `bar under the capture slip: ${under}, expected 1,1,1`);
+      assert(after === "2,2,2", `bar after the capture slip: ${after}, expected 2,2,2`);
+      return `bar: ${drag.length} paper points move the window, ${click.length} controls click; Desk ${deskHits}; under the slip ${under}`;
     });
   }
   await app.close();
