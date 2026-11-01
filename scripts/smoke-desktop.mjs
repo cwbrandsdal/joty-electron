@@ -17,6 +17,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+/** The app reports the version in package.json (a release bumps it). */
+const version = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version;
 const electronExe = path.join(root, "node_modules/electron/dist/electron.exe");
 const fixture = path.join(root, "scripts/fixtures/smoke-main.cjs");
 const shots = process.env.JOTY_SMOKE_SHOTS ?? null;
@@ -109,7 +111,7 @@ async function launch({ signedIn, args = [] }) {
       keys: Object.keys(window.joty).sort(),
       files: Object.keys(window.joty.files).sort(),
     }));
-    assert(info.version === "2.0.0", `version ${info.version}`);
+    assert(info.version === version, `version ${info.version}, expected ${version}`);
     assert(info.window === "main", info.window);
     return `${info.keys.length} members; files: ${info.files.join(", ")}`;
   });
@@ -597,7 +599,7 @@ async function launch({ signedIn, args = [] }) {
     const report = await app.evaluate(({ clipboard }) => clipboard.readText());
     await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), saved);
     assert(
-      result.ok && report.includes("Joty 2.0.0") && report.includes("Capture hotkey"),
+      result.ok && report.includes(`Joty ${version}`) && report.includes("Capture hotkey"),
       report.slice(0, 200),
     );
     assert(!report.includes("top secret"), "sealed text in diagnostics");
