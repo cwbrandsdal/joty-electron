@@ -1,6 +1,6 @@
 {
   "name": "joty-electron",
-  "version": "1.12.2",
+  "version": "2.0.0",
   "description": "Joty — Notes that keep up (Desktop)",
   "main": "electron/main.cjs",
   "type": "module",
@@ -70,31 +70,24 @@
   "build": {
     "appId": "io.joty.desktop",
     "productName": "Joty",
-    "fileAssociations": [
-      {
-        "ext": [
-          "txt",
-          "log"
-        ],
-        "name": "Text document",
-        "role": "Editor"
-      },
-      {
-        "ext": [
-          "md",
-          "markdown"
-        ],
-        "name": "Markdown document",
-        "role": "Editor"
-      }
-    ],
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/renderer/**/*",
       "electron/**/*",
+      "!electron/**/*.test.cjs",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "electron/ocr-win.ps1",
+        "to": "ocr-win.ps1"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
     ],
     "win": {
       "target": [
@@ -120,7 +113,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Joty"
+      "shortcutName": "Joty",
+      "include": "build/installer.nsh"
     }
   }
 }
