@@ -16,7 +16,7 @@
     "format": "prettier --write .",
     "prepare": "husky",
     "test": "node --test electron/*.test.cjs",
-    "test:local-files": "node --experimental-strip-types scripts/test-local-files.mjs"
+    "test:smoke": "node --experimental-strip-types scripts/smoke-desktop.mjs"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
