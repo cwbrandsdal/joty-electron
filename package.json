@@ -1,6 +1,6 @@
 {
   "name": "joty-electron",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Joty — Notes that keep up (Desktop)",
   "main": "electron/main.cjs",
   "type": "module",
